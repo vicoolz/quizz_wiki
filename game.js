@@ -506,39 +506,44 @@ async function beginGame(playDate) {
    CHARGEMENT DES CATÉGORIES D'UN ARTICLE
    ==================================================================== */
 async function loadArticle() {
-    G.phase    = 'loading-cats';
-    G.cats     = [];
-    G.hints    = [];
-    G.attempts = 0;
-
-    const title = G.articles[G.idx];
-    updateProgress();
-    $('categories-container').innerHTML = '<p class="loading-msg">⏳ Chargement depuis Wikipédia…</p>';
-    $('guess-section').classList.remove('hidden');
-    $('result-section').classList.add('hidden');
-    $('guess-input').value = '';
-    setControls(true);
-
-    try {
-        const data = await fetchArticleData(title);
-        G.cats  = data.cats;
-        G.hints = data.hints;
-    } catch {
-        $('categories-container').innerHTML =
-            '<p class="loading-msg error-msg">❌ Erreur réseau. Vous pouvez passer cet article.</p>';
-        G.cats  = [];
-        G.hints = [];
-        $('btn-skip').disabled = false;
-        G.phase = 'guessing';
-        return;
-    }
-
-    if (G.cats.length + G.hints.length < MIN_HINTS) {
-        // Pas assez d'indices : on passe au suivant sans compter comme Raté
-        G.idx++;
+    // Boucle pour l'auto-skip (évite la récursion)
+    while (true) {
         if (G.idx >= ARTICLES_PER_DAY) { endGame(); return; }
-        await loadArticle();
-        return;
+
+        G.phase    = 'loading-cats';
+        G.cats     = [];
+        G.hints    = [];
+        G.attempts = 0;
+
+        const title = G.articles[G.idx];
+        updateProgress();
+        $('categories-container').innerHTML = '<p class="loading-msg">⏳ Chargement depuis Wikipédia…</p>';
+        $('guess-section').classList.remove('hidden');
+        $('result-section').classList.add('hidden');
+        $('guess-input').value = '';
+        setControls(true);
+
+        try {
+            const data = await fetchArticleData(title);
+            G.cats  = data.cats;
+            G.hints = data.hints;
+        } catch {
+            $('categories-container').innerHTML =
+                '<p class="loading-msg error-msg">❌ Erreur réseau. Vous pouvez passer cet article.</p>';
+            G.cats  = [];
+            G.hints = [];
+            $('btn-skip').disabled = false;
+            G.phase = 'guessing';
+            return;
+        }
+
+        if (G.cats.length + G.hints.length < MIN_HINTS) {
+            // Pas assez d'indices : passer silencieusement au suivant
+            G.idx++;
+            continue;
+        }
+
+        break;
     }
 
     G.phase = 'guessing';
