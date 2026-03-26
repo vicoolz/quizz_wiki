@@ -6,8 +6,9 @@
 const WP_API           = 'https://fr.wikipedia.org/w/api.php';
 const WD_API           = 'https://www.wikidata.org/w/api.php';
 const ARTICLES_PER_DAY = 10;
-const BUFFER_SIZE       = ARTICLES_PER_DAY * 2; // buffer pour garantir 10 articles jouables
+const BUFFER_SIZE       = ARTICLES_PER_DAY * 3; // buffer pour garantir 10 articles jouables
 const MIN_HINTS        = 5;   // seuil minimum (catégories + Wikidata + description)
+const MIN_SITELINKS    = 60;  // seuil de notoriété (nb de Wikipédias ayant cet article)
 
 // Propriétés Wikidata à récupérer, par ordre de pertinence
 const WIKIDATA_PROPS = [
@@ -251,15 +252,16 @@ async function fetchWikidataHints(title) {
         // Appel 1 : titre Wikipedia → entité Wikidata + claims + description
         const p1 = new URLSearchParams({
             action: 'wbgetentities', sites: 'frwiki', titles: title,
-            props: 'claims|descriptions', languages: 'fr', format: 'json', origin: '*',
+            props: 'claims|descriptions|sitelinks/urls', languages: 'fr', format: 'json', origin: '*',
         });
         const r1 = await fetch(`${WD_API}?${p1}`, { signal: AbortSignal.timeout(8000) });
         if (!r1.ok) return [];
         const d1 = await r1.json();
         const entity = Object.values(d1?.entities || {})[0];
-        if (!entity || entity.missing !== undefined) return { hints: [], description: '' };
+        if (!entity || entity.missing !== undefined) return { hints: [], description: '', sitelinks: 0 };
 
         const description = entity.descriptions?.fr?.value || '';
+        const sitelinks   = Object.keys(entity.sitelinks || {}).length;
         const qids  = new Set();
         const years = new Set();
 
@@ -302,9 +304,9 @@ async function fetchWikidataHints(title) {
             }
         }
 
-        return { hints, description };
+        return { hints, description, sitelinks };
     } catch {
-        return { hints: [], description: '' };
+        return { hints: [], description: '', sitelinks: 0 };
     }
 }
 
@@ -345,6 +347,7 @@ async function fetchArticleData(title) {
         cats,
         hints      : filterHints(wd.hints, title),
         description: filterDescription(wd.description, title),
+        sitelinks  : wd.sitelinks,
     };
 }
 
@@ -573,7 +576,9 @@ async function loadArticle() {
             return;
         }
 
-        if (G.cats.length + G.hints.length + (G.description ? 1 : 0) < MIN_HINTS) {
+        // Skip : pas assez connu OU pas assez d'indices
+        if (data.sitelinks < MIN_SITELINKS ||
+            G.cats.length + G.hints.length + (G.description ? 1 : 0) < MIN_HINTS) {
             // Pas assez d'indices : passer silencieusement au suivant
             G.idx++;
             continue;
