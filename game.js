@@ -560,8 +560,9 @@ async function loadArticle() {
         $('guess-input').value = '';
         setControls(true);
 
+        let data;
         try {
-            const data = await fetchArticleData(title);
+            data = await fetchArticleData(title);
             G.cats        = data.cats;
             G.hints       = data.hints;
             G.description = data.description;
