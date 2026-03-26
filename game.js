@@ -1,0 +1,632 @@
+﻿'use strict';
+
+/* ====================================================================
+   CONFIG
+   ==================================================================== */
+const WP_API           = 'https://fr.wikipedia.org/w/api.php';
+const ARTICLES_PER_DAY = 10;
+
+/* ====================================================================
+   GÉNÉRATEUR PSEUDO-ALÉATOIRE DÉTERMINISTE (seed = date)
+   ==================================================================== */
+function mkRng(seed) {
+    let s = seed >>> 0;
+    return () => { s = (Math.imul(1664525, s) + 1013904223) >>> 0; return s / 0x100000000; };
+}
+function todayStr() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function dateSeed(dateStr) {
+    let h = 5381;
+    for (const c of dateStr + 'wq2') h = ((h << 5) + h) ^ c.charCodeAt(0);
+    return h >>> 0;
+}
+
+/* ====================================================================
+   NORMALISATION DES RÉPONSES
+   Les parenthèses sont supprimées : "Baguette (pain)" → "baguette"
+   ==================================================================== */
+function normalize(s) {
+    return s.toLowerCase()
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+            .replace(/\s*\(.*?\)\s*/g, ' ')
+            .replace(/[^a-z0-9\s]/g, ' ')
+            .replace(/\s+/g, ' ').trim();
+}
+
+/* Distance de Levenshtein (pour la correspondance approximative) */
+function levenshtein(a, b) {
+    if (a === b) return 0;
+    const m = a.length, n = b.length;
+    const dp = Array.from({length: m+1}, (_, i) => [i, ...Array(n).fill(0)]);
+    for (let j = 0; j <= n; j++) dp[0][j] = j;
+    for (let i = 1; i <= m; i++)
+        for (let j = 1; j <= n; j++)
+            dp[i][j] = a[i-1] === b[j-1]
+                ? dp[i-1][j-1]
+                : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+    return dp[m][n];
+}
+
+function isCorrect(input, title) {
+    const g = normalize(input);
+    const t = normalize(title);
+    if (!g) return false;
+    if (g === t) return true;
+    // Tolérance : 1 erreur si titre ≤ 6 lettres, 2 si ≤ 12, sinon 3
+    const maxDist = t.length <= 6 ? 1 : t.length <= 12 ? 2 : 3;
+    return levenshtein(g, t) <= maxDist;
+}
+
+/* ====================================================================
+   POOL D'ARTICLES — plusieurs catégories en parallèle (~8 000–10 000 articles)
+   ==================================================================== */
+
+/**
+ * Sources utilisées (toutes sur fr.wikipedia.org) :
+ *   • Article de qualité  — les mieux rédigés (~2 500)
+ *   • Bon article          — très bons articles (~5 500)
+ * Combinées et dédupliquées → ~8 000 articles notables garantis.
+ */
+const POOL_SOURCES = [
+    'Catégorie:Article de qualité',
+    'Catégorie:Bon article',
+];
+
+/**
+ * Récupère TOUS les membres d'une catégorie (pagination automatique).
+ */
+async function fetchCategoryAll(cmtitle) {
+    const titles = [];
+    let cmcontinue = null;
+    do {
+        const params = new URLSearchParams({
+            action      : 'query',
+            list        : 'categorymembers',
+            cmtitle,
+            cmlimit     : '500',
+            cmtype      : 'page',
+            cmnamespace : '0',
+            format      : 'json',
+            origin      : '*',
+        });
+        if (cmcontinue) params.set('cmcontinue', cmcontinue);
+        const r = await fetch(`${WP_API}?${params}`, { signal: AbortSignal.timeout(20000) });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const d = await r.json();
+        (d?.query?.categorymembers || []).forEach(m => titles.push(m.title));
+        cmcontinue = d?.continue?.cmcontinue ?? null;
+    } while (cmcontinue);
+    return titles;
+}
+
+async function fetchPool() {
+    const key = `wq_pool_${todayStr()}`;
+    try {
+        const cached = localStorage.getItem(key);
+        if (cached) {
+            const parsed = JSON.parse(cached);
+            if (parsed?.length > 100) return parsed;
+        }
+    } catch {}
+
+    // Chargement progressif : on affiche un message avec le count en direct
+    const setStatus = msg => {
+        const el = document.getElementById('categories-container');
+        if (el) el.innerHTML = `<p class="loading-msg">${msg}</p>`;
+    };
+
+    setStatus('⏳ Chargement du pool d\'articles depuis Wikipédia…');
+
+    // Fetch toutes les sources en parallèle
+    const results = await Promise.allSettled(
+        POOL_SOURCES.map(cat => fetchCategoryAll(cat))
+    );
+
+    const seen   = new Set();
+    const titles = [];
+    results.forEach((r, i) => {
+        if (r.status === 'fulfilled') {
+            r.value.forEach(t => {
+                if (!seen.has(t)) { seen.add(t); titles.push(t); }
+            });
+        } else {
+            console.warn(`Source ${POOL_SOURCES[i]} échouée :`, r.reason);
+        }
+    });
+
+    if (!titles.length) throw new Error('Pool vide — toutes les sources ont échoué');
+
+    setStatus(`✅ ${titles.length} articles chargés. Tirage au sort…`);
+
+    try { localStorage.setItem(key, JSON.stringify(titles)); } catch {
+        // localStorage peut être plein, pas bloquant
+    }
+    return titles;
+}
+
+function pickDaily(pool, dateStr) {
+    const rng  = mkRng(dateSeed(dateStr));
+    const copy = [...pool];
+    for (let i = copy.length - 1; i > 0; i--) {
+        const j = Math.floor(rng() * (i + 1));
+        [copy[i], copy[j]] = [copy[j], copy[i]];
+    }
+    return copy.slice(0, ARTICLES_PER_DAY);
+}
+
+/* ====================================================================
+   CATÉGORIES : récupération et filtrage
+   ==================================================================== */
+// Catégories de maintenance / méta à exclure (patterns testés sur le nom de la catégorie)
+const CAT_EXCLUSIONS = [
+    // Méta qualité
+    /article de qualité/i,
+    /bon article/i,
+    /label/i,
+    // Maintenance
+    /homonymie/i,
+    /admissibilit/i,
+    /\bébauche\b/i,
+    /\bdraft\b/i,
+    /à recycler/i,
+    /à vérifier/i,
+    /à sourcer/i,
+    /manque de source/i,
+    /sans source/i,
+    /traduction à/i,
+    /traduit de/i,
+    /wikification/i,
+    /à wikifier/i,
+    /fusion/i,
+    /suppression/i,
+    /neutralité/i,
+    /conflit/i,
+    /palette/i,
+    // Portails et projets
+    /^portail\s*:/i,
+    /\bportail\b.*wikipédia/i,
+    /^projet\s*:/i,
+    /\bprojet\b.*wikipédia/i,
+    // Pages spéciales
+    /^catégorie élémentaire/i,
+    /catégorie de suivi/i,
+    /page utilisant/i,
+    /page avec/i,
+    /fichier demandé/i,
+    /lien web/i,
+    /identifiant/i,
+    /contrôle d'autorité/i,
+];
+
+function filterCats(cats, title) {
+    const nt    = normalize(title);
+    const words = nt.split(' ').filter(w => w.length >= 4);
+    return cats.filter(c => {
+        if (CAT_EXCLUSIONS.some(re => re.test(c))) return false;
+        const nc = normalize(c);
+        // Exclure si TOUS les mots significatifs du titre apparaissent dans la catégorie
+        if (words.length > 0 && words.every(w => nc.includes(w))) return false;
+        return true;
+    });
+}
+
+async function fetchArticleCats(title) {
+    const raw = [];
+    let clcontinue = null;
+
+    // Boucle de pagination : l'API renvoie max 500 catégories par requête
+    do {
+        const params = new URLSearchParams({
+            action   : 'query',
+            titles   : title,
+            prop     : 'categories',
+            cllimit  : '500',
+            format   : 'json',
+            origin   : '*',
+            redirects: '1',
+        });
+        if (clcontinue) params.set('clcontinue', clcontinue);
+
+        const r = await fetch(`${WP_API}?${params}`, { signal: AbortSignal.timeout(10000) });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const d    = await r.json();
+        const page = Object.values(d?.query?.pages || {})[0];
+        if (!page || 'missing' in page) break;
+        (page.categories || []).forEach(c =>
+            raw.push(c.title.replace(/^Catégorie\s*:\s*/i, '').trim())
+        );
+        clcontinue = d?.continue?.clcontinue ?? null;
+    } while (clcontinue);
+
+    return filterCats(raw, title);
+}
+
+/* ====================================================================
+   ÉTAT DU JEU
+   ==================================================================== */
+let G = {
+    today    : '',
+    playDate : '',
+    articles : [],   // titres des 10 articles du jour
+    idx      : 0,
+    cats     : [],   // catégories de l'article courant (toutes affichées d'emblée)
+    score    : 0,
+    results  : [],   // [{title, ok, attempts}]
+    attempts : 0,
+    phase    : 'idle',
+};
+
+/* ====================================================================
+   PERSISTANCE
+   ==================================================================== */
+const gKey     = d  => `wq_g2_${d}`;
+const statsKey = () => 'wq_s2';
+
+function saveGame() {
+    localStorage.setItem(gKey(G.playDate), JSON.stringify({
+        score: G.score, results: G.results, done: G.phase === 'done', articles: G.articles,
+    }));
+}
+function loadGame(date) {
+    try { return JSON.parse(localStorage.getItem(gKey(date))); } catch { return null; }
+}
+function loadStats() {
+    try {
+        return JSON.parse(localStorage.getItem(statsKey())) ||
+            { played:0, total:0, best:0, streak:0, lastDate:'', history:[], dist:{} };
+    } catch { return { played:0, total:0, best:0, streak:0, lastDate:'', history:[], dist:{} }; }
+}
+function saveStats(score) {
+    const s = loadStats();
+    s.played++; s.total += score;
+    if (score > s.best) s.best = score;
+    const yest = new Date(); yest.setDate(yest.getDate()-1);
+    const ys = `${yest.getFullYear()}-${String(yest.getMonth()+1).padStart(2,'0')}-${String(yest.getDate()).padStart(2,'0')}`;
+    if (s.lastDate === ys) s.streak++; else if (s.lastDate !== G.today) s.streak = 1;
+    s.lastDate = G.today;
+    s.history.unshift({ date: G.playDate, score });
+    if (s.history.length > 30) s.history.pop();
+    s.dist[score] = (s.dist[score]||0) + 1;
+    localStorage.setItem(statsKey(), JSON.stringify(s));
+}
+
+/* ====================================================================
+   NAVIGATION
+   ==================================================================== */
+function go(id) {
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    document.getElementById(`screen-${id}`).classList.add('active');
+}
+const $ = id => document.getElementById(id);
+
+function setControls(disabled) {
+    ['btn-guess','btn-skip'].forEach(id => $(id).disabled = disabled);
+    $('guess-input').disabled = disabled;
+}
+
+function updateProgress() {
+    $('article-num').textContent   = G.idx + 1;
+    $('current-score').textContent = G.score;
+    $('progress-fill').style.width = `${(G.idx / ARTICLES_PER_DAY) * 100}%`;
+}
+
+function renderCats() {
+    const box = $('categories-container');
+    box.innerHTML = '';
+    G.cats.forEach(cat => {
+        const pill = document.createElement('span');
+        pill.className   = 'category-pill';
+        pill.textContent = cat;
+        box.appendChild(pill);
+    });
+}
+
+/* ====================================================================
+   DÉMARRAGE D'UNE PARTIE
+   ==================================================================== */
+async function beginGame(playDate) {
+    G.today    = todayStr();
+    G.playDate = playDate;
+    G.score    = 0;
+    G.results  = [];
+    G.cats     = [];
+    G.attempts = 0;
+    G.idx      = 0;
+    G.phase    = 'loading-pool';
+
+    go('game');
+    $('article-total').textContent = ARTICLES_PER_DAY;
+    updateProgress();
+    $('categories-container').innerHTML = '<p class="loading-msg">⏳ Chargement des articles depuis Wikipédia…</p>';
+    setControls(true);
+    $('guess-section').classList.remove('hidden');
+    $('result-section').classList.add('hidden');
+
+    const saved = loadGame(playDate);
+
+    try {
+        if (saved?.articles?.length >= ARTICLES_PER_DAY) {
+            G.articles = saved.articles;
+        } else {
+            const pool = await fetchPool();
+            G.articles = pickDaily(pool, playDate);
+        }
+    } catch (e) {
+        $('categories-container').innerHTML =
+            `<p class="loading-msg error-msg">❌ Impossible de charger les articles (${e.message}).<br>Vérifiez votre connexion et rechargez la page.</p>`;
+        return;
+    }
+
+    if (saved?.done) {
+        G.score   = saved.score;
+        G.results = saved.results || [];
+        showResults();
+        return;
+    }
+    if (saved?.results?.length) {
+        G.idx     = saved.results.length;
+        G.score   = saved.score;
+        G.results = saved.results;
+    }
+
+    await loadArticle();
+}
+
+/* ====================================================================
+   CHARGEMENT DES CATÉGORIES D'UN ARTICLE
+   ==================================================================== */
+async function loadArticle() {
+    G.phase    = 'loading-cats';
+    G.cats     = [];
+    G.attempts = 0;
+
+    const title = G.articles[G.idx];
+    updateProgress();
+    $('categories-container').innerHTML = '<p class="loading-msg">⏳ Chargement des catégories…</p>';
+    $('guess-section').classList.remove('hidden');
+    $('result-section').classList.add('hidden');
+    $('guess-input').value = '';
+    setControls(true);
+
+    try {
+        G.cats = await fetchArticleCats(title);
+    } catch {
+        $('categories-container').innerHTML =
+            '<p class="loading-msg error-msg">❌ Erreur réseau. Vous pouvez passer cet article.</p>';
+        G.cats = [];
+        $('btn-skip').disabled = false;
+        G.phase = 'guessing';
+        return;
+    }
+
+    if (G.cats.length === 0) {
+        $('categories-container').innerHTML =
+            '<p class="loading-msg warn-msg">⚠️ Aucune catégorie disponible — article passé automatiquement.</p>';
+        setTimeout(skipArticle, 1500);
+        return;
+    }
+
+    G.phase = 'guessing';
+    renderCats();
+    setControls(false);
+    $('guess-input').focus();
+}
+
+/* ====================================================================
+   ACTIONS
+   ==================================================================== */
+function submitGuess() {
+    if (G.phase !== 'guessing') return;
+    const val = $('guess-input').value.trim();
+    if (!val) return;
+    G.attempts++;
+    if (isCorrect(val, G.articles[G.idx])) {
+        endArticle(true);
+    } else {
+        // Une seule tentative : mauvaise réponse = échec immédiat
+        endArticle(false);
+    }
+}
+
+function skipArticle() {
+    if (G.phase !== 'guessing' && G.phase !== 'loading-cats') return;
+    endArticle(false);
+}
+
+/* ====================================================================
+   FIN D'UN ARTICLE
+   ==================================================================== */
+function endArticle(ok) {
+    G.phase = 'result';
+    G.score += ok ? 1 : 0;
+    const title = G.articles[G.idx];
+    G.results.push({ title, ok, attempts: G.attempts });
+    saveGame();
+
+    $('guess-section').classList.add('hidden');
+    $('result-section').classList.remove('hidden');
+
+    const msgEl = $('result-message');
+    msgEl.className = `result-message ${ok ? 'correct' : 'wrong'}`;
+    msgEl.textContent = ok
+        ? (G.attempts <= 1 ? '🏆 Du premier coup !' : '✅ Bien trouvé !')
+        : '❌ Raté…';
+
+    $('result-answer').textContent      = title;
+    $('wiki-link').href                 = `https://fr.wikipedia.org/wiki/${encodeURIComponent(title)}`;
+    $('current-score').textContent      = G.score;
+    $('btn-next').textContent           = G.idx >= ARTICLES_PER_DAY - 1 ? 'Voir les résultats' : 'Article suivant →';
+}
+
+async function goNext() {
+    if (G.idx >= ARTICLES_PER_DAY - 1) { endGame(); return; }
+    G.idx++;
+    await loadArticle();
+}
+
+/* ====================================================================
+   FIN DE PARTIE
+   ==================================================================== */
+function endGame() {
+    G.phase = 'done';
+    saveGame();
+    if (G.playDate === G.today) saveStats(G.score);
+    showResults();
+}
+
+/* ====================================================================
+   ÉCRAN RÉSULTATS
+   ==================================================================== */
+function showResults() {
+    $('final-score-value').textContent = G.score;
+    $('final-score-max').textContent   = ARTICLES_PER_DAY;
+
+    const bd = $('results-breakdown');
+    bd.innerHTML = '';
+    G.results.forEach((r, i) => {
+        const row = document.createElement('div');
+        row.className = 'result-row';
+
+        const numDiv  = document.createElement('div');
+        numDiv.className   = 'result-num';
+        numDiv.textContent = `#${i + 1}`;
+
+        const titleDiv = document.createElement('div');
+        titleDiv.className   = 'result-title';
+        titleDiv.textContent = r.title;
+
+        const ptsDiv = document.createElement('div');
+        ptsDiv.className   = `result-pts ${r.ok ? 'pts-ok' : 'pts-fail'}`;
+        ptsDiv.textContent = r.ok ? '✓' : '✗';
+
+        row.appendChild(numDiv);
+        row.appendChild(titleDiv);
+        row.appendChild(ptsDiv);
+        bd.appendChild(row);
+    });
+
+    go('results');
+}
+
+/* ====================================================================
+   PARTAGE
+   ==================================================================== */
+function buildShareText() {
+    let t = `🐟 Wiki Quizz — ${G.playDate}\n${G.score}/${ARTICLES_PER_DAY}\n\n`;
+    G.results.forEach(r => { t += (r.ok ? '🟢' : '🔴') + '\n'; });
+    return t;
+}
+function doShare() {
+    const text = buildShareText();
+    navigator.clipboard?.writeText(text).then(() => {
+        const toast = $('share-toast');
+        toast.classList.remove('hidden');
+        setTimeout(() => toast.classList.add('hidden'), 2500);
+    }).catch(() => alert(text));
+}
+
+/* ====================================================================
+   STATISTIQUES
+   ==================================================================== */
+function renderStats() {
+    const s = loadStats();
+    $('stat-played').textContent = s.played;
+    $('stat-avg').textContent    = s.played ? (s.total / s.played).toFixed(1) : 0;
+    $('stat-best').textContent   = s.best;
+    $('stat-streak').textContent = s.streak;
+
+    const dist = $('score-distribution');
+    dist.innerHTML = '';
+    const entries = Object.entries(s.dist).map(([k,v]) => [+k,v]).sort((a,b) => a[0]-b[0]);
+    if (!entries.length) {
+        dist.innerHTML = '<p style="color:var(--text-muted);padding:8px">Aucune partie jouée.</p>';
+    } else {
+        const maxC = Math.max(...entries.map(e => e[1]));
+        entries.forEach(([sc, count]) => {
+            const row = document.createElement('div');
+            row.className = 'dist-row';
+            row.innerHTML =
+                `<div class="dist-label">${sc}/${ARTICLES_PER_DAY}</div>
+                 <div class="dist-bar-container">
+                   <div class="dist-bar" style="width:${Math.max((count/maxC)*100,4)}%">${count}</div>
+                 </div>`;
+            dist.appendChild(row);
+        });
+    }
+
+    const hist = $('stats-history');
+    hist.innerHTML = '';
+    if (!s.history.length) {
+        hist.innerHTML = '<p style="padding:12px;color:var(--text-muted)">Aucun historique.</p>';
+    } else {
+        s.history.forEach(h => {
+            const row = document.createElement('div');
+            row.className = 'history-row';
+            row.innerHTML =
+                `<div class="history-date">${h.date}</div>
+                 <div class="history-score">${h.score}/${ARTICLES_PER_DAY}</div>`;
+            hist.appendChild(row);
+        });
+    }
+    go('stats');
+}
+
+/* ====================================================================
+   ARCHIVE (30 derniers jours)
+   ==================================================================== */
+function renderArchive() {
+    const list  = $('archive-list');
+    list.innerHTML = '';
+    const today = new Date();
+    for (let i = 1; i <= 30; i++) {
+        const d  = new Date(today);
+        d.setDate(today.getDate() - i);
+        const ds = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+        const saved = loadGame(ds);
+        const row   = document.createElement('div');
+        row.className = 'archive-row';
+        if (saved?.done) {
+            row.innerHTML =
+                `<div class="archive-date">${ds}</div>
+                 <div class="archive-score">${saved.score}/${ARTICLES_PER_DAY}</div>
+                 <span class="archive-badge completed">Terminé</span>`;
+        } else {
+            row.innerHTML =
+                `<div class="archive-date">${ds}</div>
+                 <span class="archive-badge new">Jouer</span>`;
+        }
+        row.addEventListener('click', () => beginGame(ds));
+        list.appendChild(row);
+    }
+    go('archive');
+}
+
+/* ====================================================================
+   INITIALISATION
+   ==================================================================== */
+function init() {
+    $('btn-play').addEventListener('click', () => beginGame(todayStr()));
+    $('btn-how-to-play').addEventListener('click', () => go('howto'));
+    $('btn-stats').addEventListener('click', renderStats);
+    $('btn-archive').addEventListener('click', renderArchive);
+
+    document.querySelectorAll('.btn-back').forEach(btn =>
+        btn.addEventListener('click', () => go(btn.dataset.target || 'home'))
+    );
+
+    $('btn-guess').addEventListener('click', submitGuess);
+    $('guess-input').addEventListener('keydown', e => { if (e.key === 'Enter') submitGuess(); });
+    $('btn-skip').addEventListener('click', skipArticle);
+    $('btn-next').addEventListener('click', goNext);
+    $('btn-share').addEventListener('click', doShare);
+    $('btn-results-stats').addEventListener('click', renderStats);
+
+    const saved = loadGame(todayStr());
+    if (saved?.done) $('btn-play').textContent = 'Voir les résultats du jour →';
+
+    go('home');
+}
+
+document.addEventListener('DOMContentLoaded', init);

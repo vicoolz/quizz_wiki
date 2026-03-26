@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wiki Quizz — Devinez l'article Wikipédia</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐟</text></svg>">
+</head>
+<body>
+    <!-- Écran d'accueil -->
+    <div id="screen-home" class="screen active">
+        <div class="container">
+            <h1 class="title">🐟 Wiki Quizz</h1>
+            <p class="subtitle">Devinez l'article Wikipédia à partir de ses catégories.</p>
+            <p class="description">Chaque jour, 10 personnes, lieux et choses notables à deviner.<br>Un défi de culture générale et une source de découvertes !</p>
+            <button id="btn-play" class="btn btn-primary">Jouer</button>
+            <div class="home-links">
+                <button id="btn-how-to-play" class="btn btn-link">Comment jouer ?</button>
+                <button id="btn-stats" class="btn btn-link">Statistiques</button>
+                <button id="btn-archive" class="btn btn-link">Archive</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Écran comment jouer -->
+    <div id="screen-howto" class="screen">
+        <div class="container">
+            <h2>Comment jouer ?</h2>
+            <div class="howto-content">
+                <div class="howto-step">
+                    <span class="step-num">1</span>
+                    <p>Toutes les <strong>catégories Wikipédia</strong> de l'article sont affichées d'un coup — il peut y en avoir beaucoup !</p>
+                </div>
+                <div class="howto-step">
+                    <span class="step-num">2</span>
+                    <p>Devinez le <strong>titre de l'article</strong>. Pas besoin de majuscules, accents ou parenthèses.</p>
+                </div>
+                <div class="howto-step">
+                    <span class="step-num">3</span>
+                    <p>Vous pouvez faire autant d'<strong>essais</strong> que vous voulez avant de passer.</p>
+                </div>
+                <div class="howto-step">
+                    <span class="step-num">4</span>
+                    <p>Il y a <strong>10 articles</strong> à deviner chaque jour, tirés aléatoirement parmi les <strong>articles de qualité</strong> de Wikipédia. Revenez demain pour un nouveau défi !</p>
+                </div>
+                <div class="scoring-table">
+                    <h3>Barème</h3>
+                    <table>
+                        <tr><td>Article deviné</td><td class="pts">✅ 1 pt</td></tr>
+                        <tr><td>Article passé / non trouvé</td><td class="pts">0 pt</td></tr>
+                    </table>
+                    <p style="margin-top:12px;color:var(--text-muted);font-size:0.9rem">Score maximum : 10 points</p>
+                </div>
+            </div>
+            <button class="btn btn-secondary btn-back" data-target="home">← Retour</button>
+        </div>
+    </div>
+
+    <!-- Écran de jeu -->
+    <div id="screen-game" class="screen">
+        <div class="container">
+            <div class="game-header">
+                <div class="progress-info">
+                    <span id="article-num">1</span> / <span id="article-total">10</span>
+                </div>
+                <div class="score-display">
+                    Score : <span id="current-score">0</span>
+                </div>
+            </div>
+            <div class="progress-bar">
+                <div id="progress-fill" class="progress-fill"></div>
+            </div>
+
+            <div id="categories-container" class="categories-container">
+                <!-- Categories will be inserted here -->
+            </div>
+
+            <div id="guess-section" class="guess-section">
+                <div class="input-group">
+                    <input type="text" id="guess-input" placeholder="Votre réponse..." autocomplete="off" spellcheck="false">
+                    <button id="btn-guess" class="btn btn-primary">Deviner</button>
+                </div>
+                <div class="action-buttons">
+                    <button id="btn-skip" class="btn btn-ghost">Passer</button>
+                </div>
+            </div>
+
+            <div id="result-section" class="result-section hidden">
+                <div id="result-message" class="result-message"></div>
+                <div id="result-answer" class="result-answer"></div>
+                <a id="wiki-link" class="wiki-link" href="#" target="_blank" rel="noopener">Voir sur Wikipédia →</a>
+                <button id="btn-next" class="btn btn-primary">Article suivant</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Écran résultats -->
+    <div id="screen-results" class="screen">
+        <div class="container">
+            <h2>Résultats du jour</h2>
+            <div class="final-score">
+                <span id="final-score-value">0</span> / <span id="final-score-max">10</span>
+            </div>
+            <div id="results-breakdown" class="results-breakdown">
+                <!-- Results per article -->
+            </div>
+            <div class="results-actions">
+                <button id="btn-share" class="btn btn-primary">📋 Partager</button>
+                <button id="btn-results-stats" class="btn btn-secondary">Statistiques</button>
+            </div>
+            <div id="share-toast" class="share-toast hidden">Copié dans le presse-papier !</div>
+            <button class="btn btn-link btn-back" data-target="home">← Accueil</button>
+        </div>
+    </div>
+
+    <!-- Écran statistiques -->
+    <div id="screen-stats" class="screen">
+        <div class="container">
+            <h2>Statistiques</h2>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-played">0</div>
+                    <div class="stat-label">Parties jouées</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-avg">0</div>
+                    <div class="stat-label">Score moyen</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-best">0</div>
+                    <div class="stat-label">Meilleur score</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-streak">0</div>
+                    <div class="stat-label">Série en cours</div>
+                </div>
+            </div>
+            <h3>Distribution des scores</h3>
+            <div id="score-distribution" class="score-distribution">
+                <!-- Bar chart -->
+            </div>
+            <h3>Historique</h3>
+            <div id="stats-history" class="stats-history">
+                <!-- History entries -->
+            </div>
+            <button class="btn btn-secondary btn-back" data-target="home">← Retour</button>
+        </div>
+    </div>
+
+    <!-- Écran archive -->
+    <div id="screen-archive" class="screen">
+        <div class="container">
+            <h2>Archive</h2>
+            <p class="archive-desc">Rejouez les puzzles des jours précédents.</p>
+            <div id="archive-list" class="archive-list">
+                <!-- Archive entries -->
+            </div>
+            <button class="btn btn-secondary btn-back" data-target="home">← Retour</button>
+        </div>
+    </div>
+
+    <script src="game.js"></script>
+</body>
+</html>

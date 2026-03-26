@@ -1,0 +1,14 @@
+# Dépendances
+node_modules/
+.npm/
+
+# Vercel
+.vercel/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Éditeurs
+.vscode/
+*.log
