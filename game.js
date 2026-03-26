@@ -4,7 +4,12 @@
    CONFIG
    ==================================================================== */
 const WP_API           = 'https://fr.wikipedia.org/w/api.php';
+const WD_API           = 'https://www.wikidata.org/w/api.php';
 const ARTICLES_PER_DAY = 10;
+const MIN_HINTS        = 5;   // seuil minimum (catégories + Wikidata)
+
+// Propriétés Wikidata à récupérer comme indices supplémentaires
+const WIKIDATA_PROPS = ['P31','P17','P106','P27','P131','P361'];
 
 /* ====================================================================
    GÉNÉRATEUR PSEUDO-ALÉATOIRE DÉTERMINISTE (seed = date)
@@ -160,55 +165,18 @@ function pickDaily(pool, dateStr) {
    CATÉGORIES : récupération et filtrage
    ==================================================================== */
 // Catégories de maintenance / méta à exclure
+// Catégories visibles mais inutiles au jeu (le gros du ménage est fait par clshow=!hidden)
 const CAT_EXCLUSIONS = [
-    // Méta qualité
     /article de qualité/i,
     /bon article/i,
     /label/i,
-    // Maintenance
     /homonymie/i,
-    /admissibilit/i,
-    /\bébauche\b/i,
-    /\bdraft\b/i,
-    /à recycler/i,
-    /à vérifier/i,
-    /à sourcer/i,
-    /manque de source/i,
-    /sans source/i,
-    /traduction à/i,
-    /traduit de/i,
-    /wikification/i,
-    /à wikifier/i,
-    /fusion/i,
-    /suppression/i,
-    /neutralité/i,
-    /conflit/i,
-    /palette/i,
-    // Portails et projets
     /^portail\s*:/i,
-    /\bportail\b.*wikipédia/i,
     /^projet\s*:/i,
-    /\bprojet\b.*wikipédia/i,
-    // Pages spéciales techniques
-    /^catégorie élémentaire/i,
-    /catégorie de suivi/i,
-    /page utilisant/i,
-    /page avec/i,
-    /fichier demandé/i,
-    /lien web/i,
-    /identifiant/i,
-    /contrôle d'autorité/i,
-    // Catégories structurelles cryptiques (onomastique, toponymie...)
     /^éponyme/i,
-    /éponyme de/i,
     /^toponyme/i,
-    /toponyme évoquant/i,
     /^anthroponyme/i,
     /^patronyme/i,
-    /^prénom/i,
-    /^surnom/i,
-    /wikipédia:/i,
-    /modèle:/i,
 ];
 
 function filterCats(cats, title) {
@@ -224,31 +192,85 @@ function filterCats(cats, title) {
 }
 
 /**
- * Masque le titre (et ses variantes) dans un texte avec des blocs.
- * Ex: "Napoleon Ier" dans le texte devient "████████"
+ * Récupère les hints Wikidata (P31, P17, P106…) pour un titre Wikipedia FR.
+ * Non bloquant : retourne [] en cas d'échec.
  */
-function maskTitle(text, title) {
-    // Construire des variantes à masquer
-    const variants = [title];
-    // Sans parenthèses : "Baguette (pain)" → "Baguette"
-    const noParens = title.replace(/\s*\(.*?\)\s*/g, ' ').trim();
-    if (noParens !== title) variants.push(noParens);
-    // Chaque mot de plus de 4 lettres
-    title.split(/[\s\-']+/).filter(w => w.length > 4).forEach(w => variants.push(w));
+async function fetchWikidataHints(title) {
+    try {
+        // Appel 1 : titre Wikipedia → entité Wikidata + claims
+        const p1 = new URLSearchParams({
+            action: 'wbgetentities', sites: 'frwiki', titles: title,
+            props: 'claims', format: 'json', origin: '*',
+        });
+        const r1 = await fetch(`${WD_API}?${p1}`, { signal: AbortSignal.timeout(8000) });
+        if (!r1.ok) return [];
+        const d1 = await r1.json();
+        const entity = Object.values(d1?.entities || {})[0];
+        if (!entity || entity.missing !== undefined) return [];
 
-    let result = text;
-    for (const v of variants) {
-        // Escape pour regex, insensible à la casse
-        const escaped = v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        result = result.replace(new RegExp(escaped, 'gi'), match => '█'.repeat(match.length));
+        // Extraire les Q-IDs des propriétés voulues
+        const qids = new Set();
+        for (const prop of WIKIDATA_PROPS) {
+            for (const claim of (entity.claims?.[prop] || [])) {
+                const v = claim?.mainsnak?.datavalue?.value;
+                if (v?.id) qids.add(v.id);
+            }
+        }
+        if (qids.size === 0) return [];
+
+        // Appel 2 : résoudre les Q-IDs en labels français
+        const p2 = new URLSearchParams({
+            action: 'wbgetentities', ids: [...qids].join('|'),
+            props: 'labels', languages: 'fr', format: 'json', origin: '*',
+        });
+        const r2 = await fetch(`${WD_API}?${p2}`, { signal: AbortSignal.timeout(8000) });
+        if (!r2.ok) return [];
+        const d2 = await r2.json();
+
+        const labels = [];
+        const seen = new Set();
+        for (const ent of Object.values(d2?.entities || {})) {
+            const lbl = ent?.labels?.fr?.value;
+            if (lbl && !seen.has(lbl.toLowerCase())) {
+                seen.add(lbl.toLowerCase());
+                labels.push(lbl);
+            }
+        }
+        return labels;
+    } catch {
+        return [];
     }
-    return result;
 }
 
 /**
- * Récupère les catégories de l'article (avec pagination).
+ * Filtre les hints Wikidata : exclure ceux qui contiennent tous les mots du titre.
+ */
+function filterHints(hints, title) {
+    const nt    = normalize(title);
+    const words = nt.split(' ').filter(w => w.length >= 4);
+    return hints.filter(h => {
+        const nh = normalize(h);
+        if (words.length > 0 && words.every(w => nh.includes(w))) return false;
+        return true;
+    });
+}
+
+/**
+ * Récupère catégories Wikipedia (clshow=!hidden) + hints Wikidata en parallèle.
  */
 async function fetchArticleData(title) {
+    // Lancer les deux fetches en parallèle
+    const [cats, rawHints] = await Promise.all([
+        fetchCategoriesWP(title),
+        fetchWikidataHints(title),
+    ]);
+    return { cats, hints: filterHints(rawHints, title) };
+}
+
+/**
+ * Récupère les catégories Wikipedia (avec pagination et clshow=!hidden).
+ */
+async function fetchCategoriesWP(title) {
     const raw = [];
     let clcontinue = null;
     do {
@@ -257,6 +279,7 @@ async function fetchArticleData(title) {
             titles   : title,
             prop     : 'categories',
             cllimit  : '500',
+            clshow   : '!hidden',
             format   : 'json',
             origin   : '*',
             redirects: '1',
@@ -273,7 +296,7 @@ async function fetchArticleData(title) {
         clcontinue = d?.continue?.clcontinue ?? null;
     } while (clcontinue);
 
-    return { cats: filterCats(raw, title) };
+    return filterCats(raw, title);
 }
 
 /* ====================================================================
@@ -285,6 +308,7 @@ let G = {
     articles : [],
     idx      : 0,
     cats     : [],
+    hints    : [],
     score    : 0,
     results  : [],
     attempts : 0,
@@ -354,6 +378,12 @@ function renderCats() {
         pill.textContent = cat;
         box.appendChild(pill);
     });
+    G.hints.forEach(hint => {
+        const pill = document.createElement('span');
+        pill.className   = 'category-pill wikidata-pill';
+        pill.textContent = hint;
+        box.appendChild(pill);
+    });
 }
 
 /* ====================================================================
@@ -365,6 +395,7 @@ async function beginGame(playDate) {
     G.score    = 0;
     G.results  = [];
     G.cats     = [];
+    G.hints    = [];
     G.attempts = 0;
     G.idx      = 0;
     G.phase    = 'loading-pool';
@@ -413,6 +444,7 @@ async function beginGame(playDate) {
 async function loadArticle() {
     G.phase    = 'loading-cats';
     G.cats     = [];
+    G.hints    = [];
     G.attempts = 0;
 
     const title = G.articles[G.idx];
@@ -425,19 +457,21 @@ async function loadArticle() {
 
     try {
         const data = await fetchArticleData(title);
-        G.cats    = data.cats;
+        G.cats  = data.cats;
+        G.hints = data.hints;
     } catch {
         $('categories-container').innerHTML =
             '<p class="loading-msg error-msg">❌ Erreur réseau. Vous pouvez passer cet article.</p>';
-        G.cats = [];
+        G.cats  = [];
+        G.hints = [];
         $('btn-skip').disabled = false;
         G.phase = 'guessing';
         return;
     }
 
-    if (G.cats.length === 0) {
+    if (G.cats.length + G.hints.length < MIN_HINTS) {
         $('categories-container').innerHTML =
-            '<p class="loading-msg warn-msg">⚠️ Aucune donnée disponible — article passé automatiquement.</p>';
+            '<p class="loading-msg warn-msg">⚠️ Pas assez d\u2019indices — article passé automatiquement.</p>';
         setTimeout(skipArticle, 1500);
         return;
     }
