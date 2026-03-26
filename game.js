@@ -246,36 +246,9 @@ function maskTitle(text, title) {
 }
 
 /**
- * Récupère en un seul appel API :
- *  - Les catégories (avec pagination)
- *  - L'extrait d'introduction (premier paragraphe)
+ * Récupère les catégories de l'article (avec pagination).
  */
 async function fetchArticleData(title) {
-    // 1. Introduction (1 seul appel, pas de pagination nécessaire)
-    const introParams = new URLSearchParams({
-        action     : 'query',
-        titles     : title,
-        prop       : 'extracts',
-        exintro    : '1',
-        exsentences: '5',
-        explaintext: '1',
-        format     : 'json',
-        origin     : '*',
-        redirects  : '1',
-    });
-    let extract = '';
-    try {
-        const r = await fetch(`${WP_API}?${introParams}`, { signal: AbortSignal.timeout(10000) });
-        if (r.ok) {
-            const d    = await r.json();
-            const page = Object.values(d?.query?.pages || {})[0];
-            if (page && !('missing' in page)) {
-                extract = (page.extract || '').trim();
-            }
-        }
-    } catch { /* non bloquant */ }
-
-    // 2. Catégories (avec pagination)
     const raw = [];
     let clcontinue = null;
     do {
@@ -300,10 +273,7 @@ async function fetchArticleData(title) {
         clcontinue = d?.continue?.clcontinue ?? null;
     } while (clcontinue);
 
-    return {
-        cats   : filterCats(raw, title),
-        extract: maskTitle(extract, title),
-    };
+    return { cats: filterCats(raw, title) };
 }
 
 /* ====================================================================
@@ -315,7 +285,6 @@ let G = {
     articles : [],
     idx      : 0,
     cats     : [],
-    extract  : '',   // premier paragraphe Wikipedia (titre masqué)
     score    : 0,
     results  : [],
     attempts : 0,
@@ -379,25 +348,12 @@ function updateProgress() {
 function renderCats() {
     const box = $('categories-container');
     box.innerHTML = '';
-
-    // Extrait d'introduction (si disponible) en haut, encadré
-    if (G.extract) {
-        const block = document.createElement('div');
-        block.className   = 'extract-block';
-        block.textContent = G.extract;
-        box.appendChild(block);
-    }
-
-    // Bulles de catégories
-    const pillsWrap = document.createElement('div');
-    pillsWrap.className = 'pills-wrap';
     G.cats.forEach(cat => {
         const pill = document.createElement('span');
         pill.className   = 'category-pill';
         pill.textContent = cat;
-        pillsWrap.appendChild(pill);
+        box.appendChild(pill);
     });
-    box.appendChild(pillsWrap);
 }
 
 /* ====================================================================
@@ -455,9 +411,8 @@ async function beginGame(playDate) {
    CHARGEMENT DES CATÉGORIES D'UN ARTICLE
    ==================================================================== */
 async function loadArticle() {
-    G.phase   = 'loading-cats';
-    G.cats    = [];
-    G.extract = '';
+    G.phase    = 'loading-cats';
+    G.cats     = [];
     G.attempts = 0;
 
     const title = G.articles[G.idx];
@@ -471,7 +426,6 @@ async function loadArticle() {
     try {
         const data = await fetchArticleData(title);
         G.cats    = data.cats;
-        G.extract = data.extract;
     } catch {
         $('categories-container').innerHTML =
             '<p class="loading-msg error-msg">❌ Erreur réseau. Vous pouvez passer cet article.</p>';
@@ -481,7 +435,7 @@ async function loadArticle() {
         return;
     }
 
-    if (G.cats.length === 0 && !G.extract) {
+    if (G.cats.length === 0) {
         $('categories-container').innerHTML =
             '<p class="loading-msg warn-msg">⚠️ Aucune donnée disponible — article passé automatiquement.</p>';
         setTimeout(skipArticle, 1500);
