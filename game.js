@@ -6,7 +6,7 @@
 const WP_API           = 'https://fr.wikipedia.org/w/api.php';
 const WD_API           = 'https://www.wikidata.org/w/api.php';
 const ARTICLES_PER_DAY = 10;
-const MIN_HINTS        = 5;   // seuil minimum (catégories + Wikidata)
+const MIN_HINTS        = 2;   // seuil minimum (catégories + Wikidata)
 
 // Propriétés Wikidata à récupérer comme indices supplémentaires
 const WIKIDATA_PROPS = ['P31','P17','P106','P27','P131','P361'];
@@ -470,9 +470,10 @@ async function loadArticle() {
     }
 
     if (G.cats.length + G.hints.length < MIN_HINTS) {
-        $('categories-container').innerHTML =
-            '<p class="loading-msg warn-msg">⚠️ Pas assez d\u2019indices — article passé automatiquement.</p>';
-        setTimeout(skipArticle, 1500);
+        // Pas assez d'indices : on passe au suivant sans compter comme Raté
+        G.idx++;
+        if (G.idx >= ARTICLES_PER_DAY) { endGame(); return; }
+        await loadArticle();
         return;
     }
 
