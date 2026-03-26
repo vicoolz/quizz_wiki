@@ -8,8 +8,44 @@ const WD_API           = 'https://www.wikidata.org/w/api.php';
 const ARTICLES_PER_DAY = 10;
 const MIN_HINTS        = 2;   // seuil minimum (catégories + Wikidata)
 
-// Propriétés Wikidata à récupérer comme indices supplémentaires
-const WIKIDATA_PROPS = ['P31','P17','P106','P27','P131','P361'];
+// Propriétés Wikidata à récupérer, par ordre de pertinence
+const WIKIDATA_PROPS = [
+    'P31',  // instance of (nature de l'élément)
+    'P279', // subclass of (sous-classe, concepts)
+    'P106', // occupation (métier)
+    'P101', // field of work (domaine)
+    'P136', // genre (œuvres culturelles)
+    'P17',  // country (pays)
+    'P27',  // citizenship (nationalité)
+    'P19',  // place of birth (lieu de naissance)
+    'P131', // located in (localisation)
+    'P50',  // author (auteur)
+    'P57',  // director (réalisateur)
+    'P84',  // architect (architecte)
+    'P495', // country of origin
+    'P361', // part of
+    'P710', // participant (evénements)
+    'P166', // award received (récompenses)
+    'P26',  // spouse (conjoint)
+    'P569', // date of birth → année
+    'P570', // date of death → année
+    'P571', // inception → année
+    'P577', // publication date → année
+    'P580', // start time → année
+    'P582', // end time → année
+];
+// Propriétés dont la valeur est une date → on extrait l'année uniquement
+const WIKIDATA_DATE_PROPS = new Set(['P569','P570','P571','P577','P580','P582']);
+// Limite du nombre de valeurs affichées par propriété
+const WIKIDATA_PROP_LIMIT  = { P710: 4, P166: 3, P279: 2 };
+// Labels Wikidata trop génériques pour être utiles comme indices
+const WD_SKIP_LABELS = new Set([
+    'entité','élément','chose','objet','concept abstrait','taxon',
+    'groupe','groupe paraphyélétique','clade',
+    'page de désambiguësation wikimedia',
+    'article wikimedia de liste de contrôle',
+    'wikimedia list article',
+]);
 
 /* ====================================================================
    GÉNÉRATEUR PSEUDO-ALÉATOIRE DÉTERMINISTE (seed = date)
@@ -192,7 +228,21 @@ function filterCats(cats, title) {
 }
 
 /**
- * Récupère les hints Wikidata (P31, P17, P106…) pour un titre Wikipedia FR.
+ * Extrait l'année d'une valeur de date Wikidata.
+ * "+1867-11-07T00:00:00Z" → "1867"
+ * "-0400-00-00T00:00:00Z" → "400 av. J.-C."
+ */
+function wdTimeToYear(timeStr) {
+    const m = timeStr.match(/^([+-])0*(\d{1,4})/);
+    if (!m) return null;
+    const year = parseInt(m[2], 10);
+    if (year === 0) return null;
+    return m[1] === '-' ? `${year} av. J.-C.` : String(year);
+}
+
+/**
+ * Récupère les hints Wikidata pour un titre Wikipedia FR.
+ * Gère les valeurs entité (label FR) et date (année).
  * Non bloquant : retourne [] en cas d'échec.
  */
 async function fetchWikidataHints(title) {
@@ -208,35 +258,49 @@ async function fetchWikidataHints(title) {
         const entity = Object.values(d1?.entities || {})[0];
         if (!entity || entity.missing !== undefined) return [];
 
-        // Extraire les Q-IDs des propriétés voulues
-        const qids = new Set();
+        const qids  = new Set();
+        const years = new Set();
+
         for (const prop of WIKIDATA_PROPS) {
-            for (const claim of (entity.claims?.[prop] || [])) {
-                const v = claim?.mainsnak?.datavalue?.value;
-                if (v?.id) qids.add(v.id);
+            const claims = entity.claims?.[prop] || [];
+            const limit  = WIKIDATA_PROP_LIMIT[prop] ?? Infinity;
+            let count = 0;
+            for (const claim of claims) {
+                if (count >= limit) break;
+                const dv = claim?.mainsnak?.datavalue;
+                if (!dv) continue;
+                if (WIKIDATA_DATE_PROPS.has(prop) && dv.type === 'time') {
+                    const yr = wdTimeToYear(dv.value.time);
+                    if (yr) { years.add(yr); count++; }
+                } else if (dv.type === 'wikibase-entityid' && dv.value?.id) {
+                    qids.add(dv.value.id); count++;
+                }
             }
         }
-        if (qids.size === 0) return [];
 
-        // Appel 2 : résoudre les Q-IDs en labels français
-        const p2 = new URLSearchParams({
-            action: 'wbgetentities', ids: [...qids].join('|'),
-            props: 'labels', languages: 'fr', format: 'json', origin: '*',
-        });
-        const r2 = await fetch(`${WD_API}?${p2}`, { signal: AbortSignal.timeout(8000) });
-        if (!r2.ok) return [];
-        const d2 = await r2.json();
+        const hints = [...years];  // années en premier
 
-        const labels = [];
-        const seen = new Set();
-        for (const ent of Object.values(d2?.entities || {})) {
-            const lbl = ent?.labels?.fr?.value;
-            if (lbl && !seen.has(lbl.toLowerCase())) {
-                seen.add(lbl.toLowerCase());
-                labels.push(lbl);
+        if (qids.size > 0) {
+            // Appel 2 : résoudre les Q-IDs en labels français (max 50)
+            const p2 = new URLSearchParams({
+                action: 'wbgetentities', ids: [...qids].slice(0, 50).join('|'),
+                props: 'labels', languages: 'fr', format: 'json', origin: '*',
+            });
+            const r2 = await fetch(`${WD_API}?${p2}`, { signal: AbortSignal.timeout(8000) });
+            if (r2.ok) {
+                const d2   = await r2.json();
+                const seen = new Set(hints.map(h => h.toLowerCase()));
+                for (const ent of Object.values(d2?.entities || {})) {
+                    const lbl = ent?.labels?.fr?.value;
+                    if (lbl && !WD_SKIP_LABELS.has(lbl.toLowerCase()) && !seen.has(lbl.toLowerCase())) {
+                        seen.add(lbl.toLowerCase());
+                        hints.push(lbl);
+                    }
+                }
             }
         }
-        return labels;
+
+        return hints;
     } catch {
         return [];
     }
