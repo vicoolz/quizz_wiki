@@ -6,6 +6,7 @@
 const WP_API           = 'https://fr.wikipedia.org/w/api.php';
 const WD_API           = 'https://www.wikidata.org/w/api.php';
 const ARTICLES_PER_DAY = 10;
+const BUFFER_SIZE       = ARTICLES_PER_DAY * 2; // buffer pour garantir 10 articles jouables
 const MIN_HINTS        = 5;   // seuil minimum (catégories + Wikidata + description)
 
 // Propriétés Wikidata à récupérer, par ordre de pertinence
@@ -194,7 +195,7 @@ function pickDaily(pool, dateStr) {
         const j = Math.floor(rng() * (i + 1));
         [copy[i], copy[j]] = [copy[j], copy[i]];
     }
-    return copy.slice(0, ARTICLES_PER_DAY);
+    return copy.slice(0, BUFFER_SIZE);
 }
 
 /* ====================================================================
@@ -404,7 +405,8 @@ const statsKey = () => 'wq_s2';
 
 function saveGame() {
     localStorage.setItem(gKey(G.playDate), JSON.stringify({
-        score: G.score, results: G.results, done: G.phase === 'done', articles: G.articles,
+        score: G.score, results: G.results, done: G.phase === 'done',
+        articles: G.articles, idx: G.idx,
     }));
 }
 function loadGame(date) {
@@ -445,9 +447,10 @@ function setControls(disabled) {
 }
 
 function updateProgress() {
-    $('article-num').textContent   = G.idx + 1;
+    const played = G.results.length;
+    $('article-num').textContent   = Math.min(played + 1, ARTICLES_PER_DAY);
     $('current-score').textContent = G.score;
-    $('progress-fill').style.width = `${(G.idx / ARTICLES_PER_DAY) * 100}%`;
+    $('progress-fill').style.width = `${(played / ARTICLES_PER_DAY) * 100}%`;
 }
 
 function renderCats() {
@@ -521,7 +524,8 @@ async function beginGame(playDate) {
         return;
     }
     if (saved?.results?.length) {
-        G.idx     = saved.results.length;
+        // saved.idx est l'index du dernier article joué ; on reprend au suivant
+        G.idx     = saved.idx !== undefined ? saved.idx + 1 : saved.results.length;
         G.score   = saved.score;
         G.results = saved.results;
     }
@@ -535,7 +539,9 @@ async function beginGame(playDate) {
 async function loadArticle() {
     // Boucle pour l'auto-skip (évite la récursion)
     while (true) {
-        if (G.idx >= ARTICLES_PER_DAY) { endGame(); return; }
+        // Fini si on a joué 10 articles ou épuisé le buffer
+        if (G.results.length >= ARTICLES_PER_DAY) { endGame(); return; }
+        if (G.idx >= G.articles.length) { endGame(); return; }
 
         G.phase    = 'loading-cats';
         G.cats        = [];
@@ -625,11 +631,11 @@ function endArticle(ok) {
     $('result-answer').textContent      = title;
     $('wiki-link').href                 = `https://fr.wikipedia.org/wiki/${encodeURIComponent(title)}`;
     $('current-score').textContent      = G.score;
-    $('btn-next').textContent           = G.idx >= ARTICLES_PER_DAY - 1 ? 'Voir les résultats' : 'Article suivant →';
+    $('btn-next').textContent = G.results.length >= ARTICLES_PER_DAY - 1 ? 'Voir les résultats' : 'Article suivant →';
 }
 
 async function goNext() {
-    if (G.idx >= ARTICLES_PER_DAY - 1) { endGame(); return; }
+    if (G.results.length >= ARTICLES_PER_DAY) { endGame(); return; }
     G.idx++;
     await loadArticle();
 }
