@@ -272,6 +272,18 @@ body {
     color: #6b21a8;
 }
 
+.wd-description {
+    width: 100%;
+    font-style: italic;
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    margin: 0 6px 10px 6px;
+    padding: 8px 14px;
+    background: var(--surface);
+    border-left: 3px solid #c084fc;
+    border-radius: var(--radius-sm);
+}
+
 .category-pill.reveal-all {
     background: #f1f5f9;
     border-color: #cbd5e1;

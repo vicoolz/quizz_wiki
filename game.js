@@ -6,7 +6,7 @@
 const WP_API           = 'https://fr.wikipedia.org/w/api.php';
 const WD_API           = 'https://www.wikidata.org/w/api.php';
 const ARTICLES_PER_DAY = 10;
-const MIN_HINTS        = 2;   // seuil minimum (catégories + Wikidata)
+const MIN_HINTS        = 5;   // seuil minimum (catégories + Wikidata + description)
 
 // Propriétés Wikidata à récupérer, par ordre de pertinence
 const WIKIDATA_PROPS = [
@@ -247,17 +247,18 @@ function wdTimeToYear(timeStr) {
  */
 async function fetchWikidataHints(title) {
     try {
-        // Appel 1 : titre Wikipedia → entité Wikidata + claims
+        // Appel 1 : titre Wikipedia → entité Wikidata + claims + description
         const p1 = new URLSearchParams({
             action: 'wbgetentities', sites: 'frwiki', titles: title,
-            props: 'claims', format: 'json', origin: '*',
+            props: 'claims|descriptions', languages: 'fr', format: 'json', origin: '*',
         });
         const r1 = await fetch(`${WD_API}?${p1}`, { signal: AbortSignal.timeout(8000) });
         if (!r1.ok) return [];
         const d1 = await r1.json();
         const entity = Object.values(d1?.entities || {})[0];
-        if (!entity || entity.missing !== undefined) return [];
+        if (!entity || entity.missing !== undefined) return { hints: [], description: '' };
 
+        const description = entity.descriptions?.fr?.value || '';
         const qids  = new Set();
         const years = new Set();
 
@@ -300,9 +301,9 @@ async function fetchWikidataHints(title) {
             }
         }
 
-        return hints;
+        return { hints, description };
     } catch {
-        return [];
+        return { hints: [], description: '' };
     }
 }
 
@@ -320,15 +321,30 @@ function filterHints(hints, title) {
 }
 
 /**
+ * Filtre la description Wikidata : masque si elle contient tous les mots significatifs du titre.
+ */
+function filterDescription(desc, title) {
+    if (!desc) return '';
+    const nt    = normalize(title);
+    const words = nt.split(' ').filter(w => w.length >= 4);
+    const nd    = normalize(desc);
+    if (words.length > 0 && words.every(w => nd.includes(w))) return '';
+    return desc;
+}
+
+/**
  * Récupère catégories Wikipedia (clshow=!hidden) + hints Wikidata en parallèle.
  */
 async function fetchArticleData(title) {
-    // Lancer les deux fetches en parallèle
-    const [cats, rawHints] = await Promise.all([
+    const [cats, wd] = await Promise.all([
         fetchCategoriesWP(title),
         fetchWikidataHints(title),
     ]);
-    return { cats, hints: filterHints(rawHints, title) };
+    return {
+        cats,
+        hints      : filterHints(wd.hints, title),
+        description: filterDescription(wd.description, title),
+    };
 }
 
 /**
@@ -367,16 +383,17 @@ async function fetchCategoriesWP(title) {
    ÉTAT DU JEU
    ==================================================================== */
 let G = {
-    today    : '',
-    playDate : '',
-    articles : [],
-    idx      : 0,
-    cats     : [],
-    hints    : [],
-    score    : 0,
-    results  : [],
-    attempts : 0,
-    phase    : 'idle',
+    today      : '',
+    playDate   : '',
+    articles   : [],
+    idx        : 0,
+    cats       : [],
+    hints      : [],
+    description: '',
+    score      : 0,
+    results    : [],
+    attempts   : 0,
+    phase      : 'idle',
 };
 
 /* ====================================================================
@@ -436,6 +453,15 @@ function updateProgress() {
 function renderCats() {
     const box = $('categories-container');
     box.innerHTML = '';
+
+    // Description courte Wikidata (1 phrase, en italique)
+    if (G.description) {
+        const p = document.createElement('p');
+        p.className   = 'wd-description';
+        p.textContent = G.description;
+        box.appendChild(p);
+    }
+
     G.cats.forEach(cat => {
         const pill = document.createElement('span');
         pill.className   = 'category-pill';
@@ -456,11 +482,12 @@ function renderCats() {
 async function beginGame(playDate) {
     G.today    = todayStr();
     G.playDate = playDate;
-    G.score    = 0;
-    G.results  = [];
-    G.cats     = [];
-    G.hints    = [];
-    G.attempts = 0;
+    G.score       = 0;
+    G.results     = [];
+    G.cats        = [];
+    G.hints       = [];
+    G.description = '';
+    G.attempts    = 0;
     G.idx      = 0;
     G.phase    = 'loading-pool';
 
@@ -511,8 +538,9 @@ async function loadArticle() {
         if (G.idx >= ARTICLES_PER_DAY) { endGame(); return; }
 
         G.phase    = 'loading-cats';
-        G.cats     = [];
-        G.hints    = [];
+        G.cats        = [];
+        G.hints       = [];
+        G.description = '';
         G.attempts = 0;
 
         const title = G.articles[G.idx];
@@ -525,19 +553,21 @@ async function loadArticle() {
 
         try {
             const data = await fetchArticleData(title);
-            G.cats  = data.cats;
-            G.hints = data.hints;
+            G.cats        = data.cats;
+            G.hints       = data.hints;
+            G.description = data.description;
         } catch {
             $('categories-container').innerHTML =
                 '<p class="loading-msg error-msg">❌ Erreur réseau. Vous pouvez passer cet article.</p>';
-            G.cats  = [];
-            G.hints = [];
+            G.cats        = [];
+            G.hints       = [];
+            G.description = '';
             $('btn-skip').disabled = false;
             G.phase = 'guessing';
             return;
         }
 
-        if (G.cats.length + G.hints.length < MIN_HINTS) {
+        if (G.cats.length + G.hints.length + (G.description ? 1 : 0) < MIN_HINTS) {
             // Pas assez d'indices : passer silencieusement au suivant
             G.idx++;
             continue;
