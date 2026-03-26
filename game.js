@@ -797,8 +797,11 @@ function init() {
     $('btn-share').addEventListener('click', doShare);
     $('btn-results-stats').addEventListener('click', renderStats);
     $('btn-replay').addEventListener('click', () => {
-        localStorage.removeItem(gKey(todayStr()));
-        beginGame(todayStr());
+        const today = todayStr();
+        // Effacer partie du jour + pool pour forcer un nouveau tirage avec le buffer de 20
+        localStorage.removeItem(gKey(today));
+        localStorage.removeItem(`wq_pool_${today}`);
+        beginGame(today);
     });
 
     const saved = loadGame(todayStr());
@@ -808,3 +811,18 @@ function init() {
 }
 
 document.addEventListener('DOMContentLoaded', init);
+
+// Utilitaire de développement : appeler resetAll() dans la console pour tout réinitialiser
+window.resetAll = function() {
+    const keys = Object.keys(localStorage).filter(k => k.startsWith('wq_'));
+    keys.forEach(k => localStorage.removeItem(k));
+    console.log(`${keys.length} clés supprimées :`, keys);
+    location.reload();
+};
+window.resetToday = function() {
+    const today = todayStr();
+    localStorage.removeItem(gKey(today));
+    localStorage.removeItem(`wq_pool_${today}`);
+    console.log('Partie et pool du jour effacés.');
+    location.reload();
+};
