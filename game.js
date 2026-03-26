@@ -796,6 +796,10 @@ function init() {
     $('btn-next').addEventListener('click', goNext);
     $('btn-share').addEventListener('click', doShare);
     $('btn-results-stats').addEventListener('click', renderStats);
+    $('btn-replay').addEventListener('click', () => {
+        localStorage.removeItem(gKey(todayStr()));
+        beginGame(todayStr());
+    });
 
     const saved = loadGame(todayStr());
     if (saved?.done) $('btn-play').textContent = 'Voir les résultats du jour →';
