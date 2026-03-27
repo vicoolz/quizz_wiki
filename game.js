@@ -6,8 +6,9 @@
 const WP_API           = 'https://fr.wikipedia.org/w/api.php';
 const WD_API           = 'https://www.wikidata.org/w/api.php';
 const ARTICLES_PER_DAY = 10;
-const BUFFER_SIZE       = ARTICLES_PER_DAY * 8; // buffer large pour le pré-filtrage batch
-const MIN_HINTS        = 10;  // seuil minimum de hints pour jouer
+const BUFFER_SIZE       = ARTICLES_PER_DAY * 10; // buffer large pour le pré-filtrage batch
+const MIN_HINTS        = 10;  // seuil idéal de hints pour jouer
+const MIN_HINTS_FLOOR  = 3;   // seuil plancher quand le buffer s'épuise
 const MIN_SITELINKS    = 90;  // seuil de notoriété — sujets universellement connus
 
 // Propriétés Wikidata à récupérer, par ordre de pertinence
@@ -33,6 +34,30 @@ const WIKIDATA_PROPS = [
     'P1449',// nickname (surnom distinctif)
     'P118', // league / compétition
     'P159', // headquarters (siège social)
+    // — personnes —
+    'P69',  // educated at (formation)
+    'P108', // employer (employeur)
+    'P39',  // position held (fonction)
+    'P1412',// languages spoken/written
+    'P551', // residence (lieu de résidence)
+    'P102', // political party
+    // — œuvres (films, musique, livres) —
+    'P175', // performer (interprète)
+    'P161', // cast member (acteur)
+    'P86',  // composer (compositeur)
+    'P58',  // screenwriter (scénariste)
+    'P272', // production company
+    'P364', // original language of film/TV
+    // — lieux —
+    'P36',  // capital
+    'P30',  // continent
+    'P37',  // official language
+    'P38',  // currency (monnaie)
+    // — organisations —
+    'P112', // founded by (fondateur)
+    'P127', // owned by (propriétaire)
+    'P452', // industry (secteur)
+    // — dates (extraites en année) —
     'P569', // date of birth → année
     'P570', // date of death → année
     'P571', // inception → année
@@ -43,7 +68,11 @@ const WIKIDATA_PROPS = [
 // Propriétés dont la valeur est une date → on extrait l'année uniquement
 const WIKIDATA_DATE_PROPS = new Set(['P569','P570','P571','P577','P580','P582']);
 // Limite du nombre de valeurs affichées par propriété
-const WIKIDATA_PROP_LIMIT  = { P710: 4, P166: 3, P279: 2 };
+const WIKIDATA_PROP_LIMIT  = {
+    P710: 4, P166: 3, P279: 2,
+    P161: 5, P175: 3, P69: 2, P108: 3, P39: 3,
+    P1412: 3, P551: 2, P112: 3, P127: 2, P37: 3,
+};
 // Labels Wikidata trop génériques pour être utiles comme indices
 const WD_SKIP_LABELS = new Set([
     'entité','élément','chose','objet','concept abstrait','taxon',
@@ -211,6 +240,9 @@ function pickDaily(pool, dateStr) {
     return copy.slice(0, BUFFER_SIZE);
 }
 
+// Cache notoriété : titre → nombre de sitelinks (rempli par batchFilterBySitelinks)
+const sitelinksCache = new Map();
+
 // Types Wikidata P31 non-devinables (instances spécifiques d'événements récurrents)
 const WD_SKIP_P31 = new Set([
     'Q18536594', // édition des Jeux olympiques
@@ -262,14 +294,18 @@ async function batchFilterBySitelinks(titles) {
             for (const ent of Object.values(d?.entities || {})) {
                 if (ent.missing !== undefined) continue;
                 // Seuil sitelinks
-                if (Object.keys(ent.sitelinks || {}).length < MIN_SITELINKS) continue;
+                const slCount = Object.keys(ent.sitelinks || {}).length;
+                if (slCount < MIN_SITELINKS) continue;
                 // Filtre P31 : skip les types non-devinables
                 const p31vals = (ent.claims?.P31 || []).map(
                     c => c?.mainsnak?.datavalue?.value?.id
                 ).filter(Boolean);
                 if (p31vals.some(id => WD_SKIP_P31.has(id))) continue;
                 const frTitle = ent.sitelinks?.frwiki?.title;
-                if (frTitle) kept.push(frTitle);
+                if (frTitle) {
+                    sitelinksCache.set(frTitle, slCount);
+                    kept.push(frTitle);
+                }
             }
         } catch {
             kept.push(...noYear); // fail-safe
@@ -674,9 +710,19 @@ async function loadArticle() {
             return;
         }
 
-        // Skip : pas assez d'indices
-        if (G.cats.length + G.hints.length + (G.description ? 1 : 0) < MIN_HINTS) {
-            // Pas assez d'indices : passer silencieusement au suivant
+        // Ajouter un indice méta « notoriété » basé sur les sitelinks
+        const slCount = sitelinksCache.get(title);
+        if (slCount) {
+            G.hints.push(`Présent dans ${slCount} éditions de Wikipédia`);
+        }
+
+        // Seuil dynamique : strict si le buffer est large, souple sinon
+        const totalHints = G.cats.length + G.hints.length + (G.description ? 1 : 0);
+        const remaining  = G.articles.length - G.idx;
+        const needed     = ARTICLES_PER_DAY - G.results.length;
+        const minRequired = remaining > needed * 3 ? MIN_HINTS : MIN_HINTS_FLOOR;
+
+        if (totalHints < minRequired) {
             G.idx++;
             continue;
         }
