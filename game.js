@@ -6,9 +6,9 @@
 const WP_API           = 'https://fr.wikipedia.org/w/api.php';
 const WD_API           = 'https://www.wikidata.org/w/api.php';
 const ARTICLES_PER_DAY = 10;
-const BUFFER_SIZE       = ARTICLES_PER_DAY * 5; // buffer large pour le pré-filtrage batch
+const BUFFER_SIZE       = ARTICLES_PER_DAY * 8; // buffer large pour le pré-filtrage batch
 const MIN_HINTS        = 5;   // seuil minimum (catégories + Wikidata + description)
-const MIN_SITELINKS    = 60;  // seuil de notoriété (nb de Wikipédias ayant cet article)
+const MIN_SITELINKS    = 90;  // seuil de notoriété — sujets universellement connus
 
 // Propriétés Wikidata à récupérer, par ordre de pertinence
 const WIKIDATA_PROPS = [
@@ -207,8 +207,33 @@ function pickDaily(pool, dateStr) {
     return copy.slice(0, BUFFER_SIZE);
 }
 
+// Types Wikidata P31 non-devinables (instances spécifiques d'événements récurrents)
+const WD_SKIP_P31 = new Set([
+    'Q18536594', // édition des Jeux olympiques
+    'Q82414',    // Jeux olympiques (générique)
+    'Q159821',   // jeux olympiques d'hiver
+    'Q27020041', // saison sportive
+    'Q40231',    // élection
+    'Q179187',   // élection législative
+    'Q28108',    // élection présidentielle
+    'Q80930',    // élection régionale
+    'Q3839081',  // édition d'un tournoi
+    'Q16521',    // taxon
+    'Q7187',     // gène
+    'Q8054',     // protéine
+    'Q215380',   // groupe musical (trop souvent obscur)
+    'Q4167836',  // catégorie Wikimedia
+    'Q4167410',  // page de désambiguïsation
+    'Q11266439', // modèle Wikimedia
+    'Q13442814', // article scientifique
+]);
+
+// Regex : année dans le titre = instance spécifique non-devinable
+const TITLE_YEAR_RE = /\b(1[0-9]{3}|20[0-9]{2})\b/;
+
 /**
- * Filtre un tableau de titres Wikipedia par notoriété Wikidata (sitelinks).
+ * Filtre un tableau de titres Wikipedia par notoriété Wikidata (sitelinks)
+ * et par type (P31).
  * Un seul appel batch par tranche de 50 — rapide.
  * En cas d'échec partiel, conserve les titres concernés (fail-safe).
  */
@@ -217,29 +242,33 @@ async function batchFilterBySitelinks(titles) {
     const kept  = [];
     for (let i = 0; i < titles.length; i += CHUNK) {
         const chunk = titles.slice(i, i + CHUNK);
+        // Filtre rapide d'abord : éliminer les titres contenant une année
+        const noYear = chunk.filter(t => !TITLE_YEAR_RE.test(t));
+        if (noYear.length === 0) continue;
         try {
             const p = new URLSearchParams({
                 action: 'wbgetentities', sites: 'frwiki',
-                titles: chunk.join('|'),
-                props : 'sitelinks/urls',
+                titles: noYear.join('|'),
+                props : 'sitelinks/urls|claims',
                 format: 'json', origin: '*',
             });
             const r = await fetch(`${WD_API}?${p}`, { signal: AbortSignal.timeout(12000) });
-            if (!r.ok) { kept.push(...chunk); continue; }
+            if (!r.ok) { kept.push(...noYear); continue; }
             const d = await r.json();
-            // Construire un Set des titres fr qui passent le seuil
-            const passing = new Set();
             for (const ent of Object.values(d?.entities || {})) {
                 if (ent.missing !== undefined) continue;
-                if (Object.keys(ent.sitelinks || {}).length >= MIN_SITELINKS) {
-                    const frTitle = ent.sitelinks?.frwiki?.title;
-                    if (frTitle) passing.add(frTitle);
-                }
+                // Seuil sitelinks
+                if (Object.keys(ent.sitelinks || {}).length < MIN_SITELINKS) continue;
+                // Filtre P31 : skip les types non-devinables
+                const p31vals = (ent.claims?.P31 || []).map(
+                    c => c?.mainsnak?.datavalue?.value?.id
+                ).filter(Boolean);
+                if (p31vals.some(id => WD_SKIP_P31.has(id))) continue;
+                const frTitle = ent.sitelinks?.frwiki?.title;
+                if (frTitle) kept.push(frTitle);
             }
-            // Conserver l'ordre original du chunk
-            chunk.forEach(t => { if (passing.has(t)) kept.push(t); });
         } catch {
-            kept.push(...chunk); // fail-safe
+            kept.push(...noYear); // fail-safe
         }
     }
     return kept;
