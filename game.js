@@ -6,7 +6,7 @@
 const WP_API           = 'https://fr.wikipedia.org/w/api.php';
 const WD_API           = 'https://www.wikidata.org/w/api.php';
 const ARTICLES_PER_DAY = 10;
-const BUFFER_SIZE  = ARTICLES_PER_DAY * 10; // buffer large pour le pré-filtrage batch
+const BUFFER_SIZE  = ARTICLES_PER_DAY * 30; // buffer large pour le pré-filtrage batch
 const MIN_HINTS    = 10;  // seuil minimum de hints pour jouer
 const MIN_SITELINKS = 90; // seuil de notoriété — sujets universellement connus
 
@@ -467,58 +467,31 @@ function filterDescription(desc, title) {
 }
 
 /**
- * Génère des indices méta garantis (sitelinks, taille article, date) pour compléter
- * les indices manquants sans appel API supplémentaire.
- */
-function buildMetaHints(title, slCount, info) {
-    const meta = [];
-    // Notoriété
-    if (slCount) meta.push(`Présent dans ${slCount} éditions de Wikipédia`);
-    // Taille de l'article
-    if (info?.length) {
-        const kb = info.length / 1000;
-        if      (kb < 15) meta.push('Article Wikipédia court');
-        else if (kb < 40) meta.push('Article Wikipédia de longueur moyenne');
-        else if (kb < 80) meta.push('Article Wikipédia long');
-        else              meta.push('Article Wikipédia très long');
-    }
-    // Année de dernière modification
-    if (info?.touched) {
-        const year = info.touched.slice(0, 4);
-        meta.push(`Dernière modification Wikipédia en ${year}`);
-    }
-    return meta;
-}
-
-/**
  * Récupère catégories Wikipedia + hints Wikidata en parallèle.
  */
 async function fetchArticleData(title) {
-    const [wp, wd] = await Promise.all([
+    const [cats, wd] = await Promise.all([
         fetchCategoriesWP(title),
         fetchWikidataHints(title),
     ]);
     return {
-        cats       : wp.cats,
-        info       : wp.info,
+        cats,
         hints      : filterHints(wd.hints, title),
         description: filterDescription(wd.description, title),
     };
 }
 
 /**
- * Récupère les catégories Wikipedia (clshow=!hidden) + infos article (longueur, date).
+ * Récupère les catégories Wikipedia (avec pagination et clshow=!hidden).
  */
 async function fetchCategoriesWP(title) {
     const raw = [];
-    let info = null;
     let clcontinue = null;
     do {
         const params = new URLSearchParams({
             action   : 'query',
             titles   : title,
-            prop     : 'categories|info',
-            inprop   : 'url',
+            prop     : 'categories',
             cllimit  : '500',
             clshow   : '!hidden',
             format   : 'json',
@@ -531,14 +504,13 @@ async function fetchCategoriesWP(title) {
         const d    = await r.json();
         const page = Object.values(d?.query?.pages || {})[0];
         if (!page || 'missing' in page) break;
-        if (!info) info = { length: page.length, touched: page.touched };
         (page.categories || []).forEach(c =>
             raw.push(c.title.replace(/^Catégorie\s*:\s*/i, '').trim())
         );
         clcontinue = d?.continue?.clcontinue ?? null;
     } while (clcontinue);
 
-    return { cats: filterCats(raw, title), info };
+    return filterCats(raw, title);
 }
 
 /* ====================================================================
@@ -737,14 +709,8 @@ async function loadArticle() {
             return;
         }
 
-        // Indices méta : sitelinks + taille + date (toujours disponibles, jamais filtrés)
-        const slCount   = sitelinksCache.get(title);
-        const metaHints = buildMetaHints(title, slCount, data.info);
-        G.hints.push(...metaHints);
-
-        // Skip uniquement si vraiment trop pauvre (< 4 indices après méta)
-        const totalHints = G.cats.length + G.hints.length + (G.description ? 1 : 0);
-        if (totalHints < 4) {
+        // Skip : pas assez d'indices
+        if (G.cats.length + G.hints.length + (G.description ? 1 : 0) < MIN_HINTS) {
             G.idx++;
             continue;
         }
