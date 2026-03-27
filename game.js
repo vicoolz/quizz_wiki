@@ -274,28 +274,30 @@ const TITLE_YEAR_RE = /\b(1[0-9]{3}|20[0-9]{2})\b/;
  */
 async function batchFilterBySitelinks(titles) {
     const CHUNK = 50;
-    const kept  = [];
-    for (let i = 0; i < titles.length; i += CHUNK) {
-        const chunk = titles.slice(i, i + CHUNK);
-        // Filtre rapide d'abord : éliminer les titres contenant une année
-        const noYear = chunk.filter(t => !TITLE_YEAR_RE.test(t));
-        if (noYear.length === 0) continue;
+
+    // Filtre rapide : éliminer les titres contenant une année
+    const noYear = titles.filter(t => !TITLE_YEAR_RE.test(t));
+
+    // Découpage en chunks traités en parallèle
+    const chunks = [];
+    for (let i = 0; i < noYear.length; i += CHUNK) chunks.push(noYear.slice(i, i + CHUNK));
+
+    const processChunk = async chunk => {
         try {
             const p = new URLSearchParams({
                 action: 'wbgetentities', sites: 'frwiki',
-                titles: noYear.join('|'),
+                titles: chunk.join('|'),
                 props : 'sitelinks/urls|claims',
                 format: 'json', origin: '*',
             });
             const r = await fetch(`${WD_API}?${p}`, { signal: AbortSignal.timeout(12000) });
-            if (!r.ok) { kept.push(...noYear); continue; }
+            if (!r.ok) return chunk; // fail-safe
             const d = await r.json();
+            const kept = [];
             for (const ent of Object.values(d?.entities || {})) {
                 if (ent.missing !== undefined) continue;
-                // Seuil sitelinks
                 const slCount = Object.keys(ent.sitelinks || {}).length;
                 if (slCount < MIN_SITELINKS) continue;
-                // Filtre P31 : skip les types non-devinables
                 const p31vals = (ent.claims?.P31 || []).map(
                     c => c?.mainsnak?.datavalue?.value?.id
                 ).filter(Boolean);
@@ -306,11 +308,14 @@ async function batchFilterBySitelinks(titles) {
                     kept.push(frTitle);
                 }
             }
+            return kept;
         } catch {
-            kept.push(...noYear); // fail-safe
+            return chunk; // fail-safe
         }
-    }
-    return kept;
+    };
+
+    const results = await Promise.all(chunks.map(processChunk));
+    return results.flat();
 }
 
 /* ====================================================================
