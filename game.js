@@ -677,11 +677,21 @@ async function beginGame(playDate) {
    CHARGEMENT DES CATÉGORIES D'UN ARTICLE
    ==================================================================== */
 async function loadArticle() {
+    // minHints décroît si le buffer s'épuise : garantit toujours 10 articles
+    let minHints = MIN_HINTS;
+
     // Boucle pour l'auto-skip (évite la récursion)
     while (true) {
-        // Fini si on a joué 10 articles ou épuisé le buffer
+        // Fini si on a joué 10 articles
         if (G.results.length >= ARTICLES_PER_DAY) { endGame(); return; }
-        if (G.idx >= G.articles.length) { endGame(); return; }
+
+        // Buffer épuisé : si on a assez joué → fin ; sinon relâcher le seuil et recommencer
+        if (G.idx >= G.articles.length) {
+            if (minHints <= 1) { endGame(); return; } // vraiment plus rien
+            minHints = Math.max(1, Math.floor(minHints / 2));
+            G.idx = 0; // second passage avec seuil assoupli
+            continue;
+        }
 
         G.phase    = 'loading-cats';
         G.cats        = [];
@@ -714,8 +724,8 @@ async function loadArticle() {
             return;
         }
 
-        // Skip : pas assez d'indices
-        if (G.cats.length + G.hints.length + (G.description ? 1 : 0) < MIN_HINTS) {
+        // Skip : pas assez d'indices (seuil dynamique)
+        if (G.cats.length + G.hints.length + (G.description ? 1 : 0) < minHints) {
             G.idx++;
             continue;
         }
