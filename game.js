@@ -7,7 +7,7 @@ const WP_API           = 'https://fr.wikipedia.org/w/api.php';
 const WD_API           = 'https://www.wikidata.org/w/api.php';
 const ARTICLES_PER_DAY = 10;
 const BUFFER_SIZE       = ARTICLES_PER_DAY * 8; // buffer large pour le pré-filtrage batch
-const MIN_HINTS        = 5;   // seuil minimum (catégories + Wikidata + description)
+const MIN_HINTS        = 10;  // seuil minimum de hints pour jouer
 const MIN_SITELINKS    = 90;  // seuil de notoriété — sujets universellement connus
 
 // Propriétés Wikidata à récupérer, par ordre de pertinence
@@ -29,6 +29,10 @@ const WIKIDATA_PROPS = [
     'P710', // participant (evénements)
     'P166', // award received (récompenses)
     'P26',  // spouse (conjoint)
+    'P115', // home venue (stade, salle)
+    'P1449',// nickname (surnom distinctif)
+    'P118', // league / compétition
+    'P159', // headquarters (siège social)
     'P569', // date of birth → année
     'P570', // date of death → année
     'P571', // inception → année
@@ -293,13 +297,12 @@ const CAT_EXCLUSIONS = [
 ];
 
 function filterCats(cats, title) {
-    const nt    = normalize(title);
-    const words = nt.split(' ').filter(w => w.length >= 4);
+    const keywords = titleKeywords(title);
     return cats.filter(c => {
         if (CAT_EXCLUSIONS.some(re => re.test(c))) return false;
         const nc = normalize(c);
-        // Exclure si TOUS les mots significatifs du titre apparaissent dans la catégorie
-        if (words.length > 0 && words.every(w => nc.includes(w))) return false;
+        // Exclure si la catégorie contient un mot-clé significatif du titre
+        if (keywords.length > 0 && keywords.some(w => nc.includes(w))) return false;
         return true;
     });
 }
@@ -384,28 +387,47 @@ async function fetchWikidataHints(title) {
     }
 }
 
+// Mots génériques à ignorer dans le filtrage des réponses dans les hints
+const HINT_STOPWORDS = new Set([
+    'football','club','association','saint','grand','grande','ville','pays',
+    'sport','equipe','province','region','district','commune','parti',
+    'republic','royaume','empire','etat','union','national','internationale',
+]);
+
 /**
- * Filtre les hints Wikidata : exclure ceux qui contiennent tous les mots du titre.
+ * Mots significatifs d'un titre : >= 5 lettres, pas dans les stopwords,
+ * et pas un mot purement numérique.
+ */
+function titleKeywords(title) {
+    return normalize(title)
+        .split(' ')
+        .filter(w => w.length >= 5 && !HINT_STOPWORDS.has(w) && !/^\d+$/.test(w));
+}
+
+/**
+ * Filtre les hints Wikidata : exclure ceux qui contiennent N'IMPORTE QUEL
+ * mot-clé significatif du titre (pas seulement tous les mots).
  */
 function filterHints(hints, title) {
-    const nt    = normalize(title);
-    const words = nt.split(' ').filter(w => w.length >= 4);
+    const keywords = titleKeywords(title);
     return hints.filter(h => {
+        if (keywords.length === 0) return true;
         const nh = normalize(h);
-        if (words.length > 0 && words.every(w => nh.includes(w))) return false;
+        // Exclure si le hint contient un mot-clé du titre
+        if (keywords.some(w => nh.includes(w))) return false;
         return true;
     });
 }
 
 /**
- * Filtre la description Wikidata : masque si elle contient tous les mots significatifs du titre.
+ * Filtre la description Wikidata : masque si elle contient un mot-clé significatif du titre.
  */
 function filterDescription(desc, title) {
     if (!desc) return '';
-    const nt    = normalize(title);
-    const words = nt.split(' ').filter(w => w.length >= 4);
-    const nd    = normalize(desc);
-    if (words.length > 0 && words.every(w => nd.includes(w))) return '';
+    const keywords = titleKeywords(title);
+    if (keywords.length === 0) return desc;
+    const nd = normalize(desc);
+    if (keywords.some(w => nd.includes(w))) return '';
     return desc;
 }
 
