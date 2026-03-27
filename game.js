@@ -6,9 +6,8 @@
 const WP_API           = 'https://fr.wikipedia.org/w/api.php';
 const WD_API           = 'https://www.wikidata.org/w/api.php';
 const ARTICLES_PER_DAY = 10;
-const BUFFER_SIZE       = ARTICLES_PER_DAY * 10; // buffer large pour le pré-filtrage batch
-const MIN_HINTS        = 10;  // seuil minimum de hints pour jouer
-const MIN_SITELINKS    = 90;  // seuil de notoriété — sujets universellement connus
+const BUFFER_SIZE = ARTICLES_PER_DAY * 10; // articles tirés au sort chaque jour depuis le pool
+const MIN_HINTS   = 10;  // seuil minimum de hints pour jouer
 
 // Propriétés Wikidata à récupérer, par ordre de pertinence
 const WIKIDATA_PROPS = [
@@ -630,26 +629,17 @@ async function beginGame(playDate) {
     go('game');
     $('article-total').textContent = ARTICLES_PER_DAY;
     updateProgress();
-    $('categories-container').innerHTML = '<p class="loading-msg">⏳ Chargement des articles depuis Wikipédia…</p>';
+    $('categories-container').innerHTML = '<p class="loading-msg">⏳ Chargement de l\'article…</p>';
     setControls(true);
     $('guess-section').classList.remove('hidden');
     $('result-section').classList.add('hidden');
 
     const saved = loadGame(playDate);
 
-    try {
-        if (saved?.articles?.length > 0) {
-            G.articles = saved.articles;
-        } else {
-            const pool = await fetchPool();
-            const buffer = pickDaily(pool, playDate);
-            $('categories-container').innerHTML = '<p class="loading-msg">⏳ Filtrage des articles…</p>';
-            G.articles = await batchFilterBySitelinks(buffer);
-        }
-    } catch (e) {
-        $('categories-container').innerHTML =
-            `<p class="loading-msg error-msg">❌ Impossible de charger les articles (${e.message}).<br>Vérifiez votre connexion et rechargez la page.</p>`;
-        return;
+    if (saved?.articles?.length > 0) {
+        G.articles = saved.articles;
+    } else {
+        G.articles = pickDaily(playDate);
     }
 
     if (saved?.done) {
