@@ -6,8 +6,9 @@
 const WP_API           = 'https://fr.wikipedia.org/w/api.php';
 const WD_API           = 'https://www.wikidata.org/w/api.php';
 const ARTICLES_PER_DAY = 10;
-const BUFFER_SIZE = ARTICLES_PER_DAY * 10; // articles tirés au sort chaque jour depuis le pool
-const MIN_HINTS   = 10;  // seuil minimum de hints pour jouer
+const BUFFER_SIZE  = ARTICLES_PER_DAY * 10; // buffer large pour le pré-filtrage batch
+const MIN_HINTS    = 10;  // seuil minimum de hints pour jouer
+const MIN_SITELINKS = 90; // seuil de notoriété — sujets universellement connus
 
 // Propriétés Wikidata à récupérer, par ordre de pertinence
 const WIKIDATA_PROPS = [
@@ -466,31 +467,58 @@ function filterDescription(desc, title) {
 }
 
 /**
- * Récupère catégories Wikipedia (clshow=!hidden) + hints Wikidata en parallèle.
+ * Génère des indices méta garantis (sitelinks, taille article, date) pour compléter
+ * les indices manquants sans appel API supplémentaire.
+ */
+function buildMetaHints(title, slCount, info) {
+    const meta = [];
+    // Notoriété
+    if (slCount) meta.push(`Présent dans ${slCount} éditions de Wikipédia`);
+    // Taille de l'article
+    if (info?.length) {
+        const kb = info.length / 1000;
+        if      (kb < 15) meta.push('Article Wikipédia court');
+        else if (kb < 40) meta.push('Article Wikipédia de longueur moyenne');
+        else if (kb < 80) meta.push('Article Wikipédia long');
+        else              meta.push('Article Wikipédia très long');
+    }
+    // Année de dernière modification
+    if (info?.touched) {
+        const year = info.touched.slice(0, 4);
+        meta.push(`Dernière modification Wikipédia en ${year}`);
+    }
+    return meta;
+}
+
+/**
+ * Récupère catégories Wikipedia + hints Wikidata en parallèle.
  */
 async function fetchArticleData(title) {
-    const [cats, wd] = await Promise.all([
+    const [wp, wd] = await Promise.all([
         fetchCategoriesWP(title),
         fetchWikidataHints(title),
     ]);
     return {
-        cats,
+        cats       : wp.cats,
+        info       : wp.info,
         hints      : filterHints(wd.hints, title),
         description: filterDescription(wd.description, title),
     };
 }
 
 /**
- * Récupère les catégories Wikipedia (avec pagination et clshow=!hidden).
+ * Récupère les catégories Wikipedia (clshow=!hidden) + infos article (longueur, date).
  */
 async function fetchCategoriesWP(title) {
     const raw = [];
+    let info = null;
     let clcontinue = null;
     do {
         const params = new URLSearchParams({
             action   : 'query',
             titles   : title,
-            prop     : 'categories',
+            prop     : 'categories|info',
+            inprop   : 'url',
             cllimit  : '500',
             clshow   : '!hidden',
             format   : 'json',
@@ -503,13 +531,14 @@ async function fetchCategoriesWP(title) {
         const d    = await r.json();
         const page = Object.values(d?.query?.pages || {})[0];
         if (!page || 'missing' in page) break;
+        if (!info) info = { length: page.length, touched: page.touched };
         (page.categories || []).forEach(c =>
             raw.push(c.title.replace(/^Catégorie\s*:\s*/i, '').trim())
         );
         clcontinue = d?.continue?.clcontinue ?? null;
     } while (clcontinue);
 
-    return filterCats(raw, title);
+    return { cats: filterCats(raw, title), info };
 }
 
 /* ====================================================================
@@ -636,10 +665,19 @@ async function beginGame(playDate) {
 
     const saved = loadGame(playDate);
 
-    if (saved?.articles?.length > 0) {
-        G.articles = saved.articles;
-    } else {
-        G.articles = pickDaily(playDate);
+    try {
+        if (saved?.articles?.length > 0) {
+            G.articles = saved.articles;
+        } else {
+            const pool = await fetchPool();
+            const buffer = pickDaily(pool, playDate);
+            $('categories-container').innerHTML = '<p class="loading-msg">\u23f3 Filtrage des articles…</p>';
+            G.articles = await batchFilterBySitelinks(buffer);
+        }
+    } catch (e) {
+        $('categories-container').innerHTML =
+            `<p class="loading-msg error-msg">\u274c Impossible de charger les articles (${e.message}).<br>Vérifiez votre connexion et rechargez la page.</p>`;
+        return;
     }
 
     if (saved?.done) {
@@ -699,15 +737,14 @@ async function loadArticle() {
             return;
         }
 
-        // Ajouter un indice méta « notoriété » basé sur les sitelinks
-        const slCount = sitelinksCache.get(title);
-        if (slCount) {
-            G.hints.push(`Présent dans ${slCount} éditions de Wikipédia`);
-        }
+        // Indices méta : sitelinks + taille + date (toujours disponibles, jamais filtrés)
+        const slCount   = sitelinksCache.get(title);
+        const metaHints = buildMetaHints(title, slCount, data.info);
+        G.hints.push(...metaHints);
 
-        // Skip : pas assez d'indices
+        // Skip uniquement si vraiment trop pauvre (< 4 indices après méta)
         const totalHints = G.cats.length + G.hints.length + (G.description ? 1 : 0);
-        if (totalHints < MIN_HINTS) {
+        if (totalHints < 4) {
             G.idx++;
             continue;
         }

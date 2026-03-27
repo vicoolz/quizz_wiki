@@ -138,7 +138,7 @@ OFFSET ${offset}`;
         } catch (e) {
             console.error(`\n❌ Erreur SPARQL : ${e.message}`);
             if (allEntries.length < 1000) { process.exit(1); }
-            console.error('   On continue avec ce qu'on a déjà.');
+            console.error("   On continue avec ce qu'on a deja.");
             break;
         }
 
