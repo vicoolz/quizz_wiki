@@ -53,10 +53,44 @@ body {
     margin: 0 auto;
 }
 
+/* ===== HEADER NAV ===== */
+.site-header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 20px;
+    height: 52px;
+    box-shadow: var(--shadow);
+}
+
+.nav-logo {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 1.2rem;
+    font-weight: 800;
+    color: var(--primary);
+    letter-spacing: -0.5px;
+    padding: 0;
+}
+.nav-logo:hover { color: var(--primary-hover); }
+
+.nav-links {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
 /* ===== HOME ===== */
 #screen-home {
     display: none;
-    min-height: 100vh;
+    min-height: calc(100vh - 52px);
     align-items: center;
     justify-content: center;
 }
@@ -66,14 +100,6 @@ body {
 #screen-home .container {
     text-align: center;
     padding: 40px 20px;
-}
-
-.title {
-    font-size: 3rem;
-    font-weight: 800;
-    color: var(--primary);
-    margin-bottom: 12px;
-    letter-spacing: -1px;
 }
 
 .subtitle {
@@ -87,14 +113,6 @@ body {
     color: var(--text-muted);
     margin-bottom: 32px;
     font-size: 0.95rem;
-}
-
-.home-links {
-    display: flex;
-    gap: 8px;
-    justify-content: center;
-    flex-wrap: wrap;
-    margin-top: 16px;
 }
 
 /* ===== BUTTONS ===== */

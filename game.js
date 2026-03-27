@@ -923,9 +923,10 @@ function renderArchive() {
    ==================================================================== */
 function init() {
     $('btn-play').addEventListener('click', () => beginGame(todayStr()));
-    $('btn-how-to-play').addEventListener('click', () => go('howto'));
-    $('btn-stats').addEventListener('click', renderStats);
-    $('btn-archive').addEventListener('click', renderArchive);
+    $('nav-home').addEventListener('click', () => go('home'));
+    $('nav-howto').addEventListener('click', () => go('howto'));
+    $('nav-stats').addEventListener('click', renderStats);
+    $('nav-archive').addEventListener('click', renderArchive);
 
     document.querySelectorAll('.btn-back').forEach(btn =>
         btn.addEventListener('click', () => go(btn.dataset.target || 'home'))

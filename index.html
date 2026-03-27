@@ -8,18 +8,22 @@
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐟</text></svg>">
 </head>
 <body>
+    <!-- Navigation persistante -->
+    <header class="site-header">
+        <button id="nav-home" class="nav-logo">🐟 Wiki Quizz</button>
+        <nav class="nav-links">
+            <button id="nav-howto" class="btn btn-link">Comment jouer ?</button>
+            <button id="nav-stats" class="btn btn-link">Statistiques</button>
+            <button id="nav-archive" class="btn btn-link">Archive</button>
+        </nav>
+    </header>
+
     <!-- Écran d'accueil -->
     <div id="screen-home" class="screen active">
         <div class="container">
-            <h1 class="title">🐟 Wiki Quizz</h1>
             <p class="subtitle">Devinez l'article Wikipédia à partir de ses catégories.</p>
             <p class="description">Chaque jour, 10 personnes, lieux et choses notables à deviner.<br>Un défi de culture générale et une source de découvertes !</p>
             <button id="btn-play" class="btn btn-primary">Jouer</button>
-            <div class="home-links">
-                <button id="btn-how-to-play" class="btn btn-link">Comment jouer ?</button>
-                <button id="btn-stats" class="btn btn-link">Statistiques</button>
-                <button id="btn-archive" class="btn btn-link">Archive</button>
-            </div>
         </div>
     </div>
 
