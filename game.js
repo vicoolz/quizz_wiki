@@ -139,6 +139,16 @@ function isCorrect(input, title) {
         const wd = w.length <= 6 ? 1 : w.length <= 10 ? 2 : 3;
         if (levenshtein(g, w) <= wd) return true;
     }
+    // Initiales ignorées : "Franklin D. Roosevelt" → on retire "d" (1 lettre)
+    // et on vérifie que tous les mots restants (≥ 2 lettres) figurent dans le titre
+    const gWords = g.split(' ').filter(w => w.length >= 2);
+    if (gWords.length >= 1) {
+        const tWords = t.split(' ');
+        const allMatch = gWords.every(gw =>
+            tWords.some(tw => levenshtein(gw, tw) <= (tw.length <= 6 ? 1 : 2))
+        );
+        if (allMatch) return true;
+    }
     return false;
 }
 
