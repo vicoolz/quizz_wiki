@@ -772,7 +772,7 @@ function endArticle(ok) {
     $('result-answer').textContent      = title;
     $('wiki-link').href                 = `https://fr.wikipedia.org/wiki/${encodeURIComponent(title)}`;
     $('current-score').textContent      = G.score;
-    $('btn-next').textContent = G.results.length >= ARTICLES_PER_DAY - 1 ? 'Voir les résultats' : 'Article suivant →';
+    $('btn-next').textContent = G.results.length >= ARTICLES_PER_DAY ? 'Voir les résultats' : 'Article suivant →';
 }
 
 async function goNext() {
