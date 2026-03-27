@@ -7,8 +7,7 @@ const WP_API           = 'https://fr.wikipedia.org/w/api.php';
 const WD_API           = 'https://www.wikidata.org/w/api.php';
 const ARTICLES_PER_DAY = 10;
 const BUFFER_SIZE       = ARTICLES_PER_DAY * 10; // buffer large pour le pré-filtrage batch
-const MIN_HINTS        = 10;  // seuil idéal de hints pour jouer
-const MIN_HINTS_FLOOR  = 3;   // seuil plancher quand le buffer s'épuise
+const MIN_HINTS        = 10;  // seuil minimum de hints pour jouer
 const MIN_SITELINKS    = 90;  // seuil de notoriété — sujets universellement connus
 
 // Propriétés Wikidata à récupérer, par ordre de pertinence
@@ -716,13 +715,9 @@ async function loadArticle() {
             G.hints.push(`Présent dans ${slCount} éditions de Wikipédia`);
         }
 
-        // Seuil dynamique : strict si le buffer est large, souple sinon
+        // Skip : pas assez d'indices
         const totalHints = G.cats.length + G.hints.length + (G.description ? 1 : 0);
-        const remaining  = G.articles.length - G.idx;
-        const needed     = ARTICLES_PER_DAY - G.results.length;
-        const minRequired = remaining > needed * 3 ? MIN_HINTS : MIN_HINTS_FLOOR;
-
-        if (totalHints < minRequired) {
+        if (totalHints < MIN_HINTS) {
             G.idx++;
             continue;
         }
