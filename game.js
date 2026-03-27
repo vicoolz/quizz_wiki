@@ -6,7 +6,7 @@
 const WP_API           = 'https://fr.wikipedia.org/w/api.php';
 const WD_API           = 'https://www.wikidata.org/w/api.php';
 const ARTICLES_PER_DAY = 10;
-const BUFFER_SIZE       = ARTICLES_PER_DAY * 3; // buffer pour garantir 10 articles jouables
+const BUFFER_SIZE       = ARTICLES_PER_DAY * 5; // buffer large pour le pré-filtrage batch
 const MIN_HINTS        = 5;   // seuil minimum (catégories + Wikidata + description)
 const MIN_SITELINKS    = 60;  // seuil de notoriété (nb de Wikipédias ayant cet article)
 
@@ -97,9 +97,17 @@ function isCorrect(input, title) {
     const t = normalize(title);
     if (!g) return false;
     if (g === t) return true;
-    // Tolérance : 1 erreur si titre ≤ 6 lettres, 2 si ≤ 12, sinon 3
+    // Tolérance titre complet : 1/2/3 selon longueur
     const maxDist = t.length <= 6 ? 1 : t.length <= 12 ? 2 : 3;
-    return levenshtein(g, t) <= maxDist;
+    if (levenshtein(g, t) <= maxDist) return true;
+    // Match sur un mot significatif du titre (≥ 5 lettres)
+    // ex: "kurosawa" accepte "Akira Kurosawa", "eiffel" accepte "Tour Eiffel"
+    const words = t.split(' ').filter(w => w.length >= 5);
+    for (const w of words) {
+        const wd = w.length <= 6 ? 1 : w.length <= 10 ? 2 : 3;
+        if (levenshtein(g, w) <= wd) return true;
+    }
+    return false;
 }
 
 /* ====================================================================
@@ -199,6 +207,44 @@ function pickDaily(pool, dateStr) {
     return copy.slice(0, BUFFER_SIZE);
 }
 
+/**
+ * Filtre un tableau de titres Wikipedia par notoriété Wikidata (sitelinks).
+ * Un seul appel batch par tranche de 50 — rapide.
+ * En cas d'échec partiel, conserve les titres concernés (fail-safe).
+ */
+async function batchFilterBySitelinks(titles) {
+    const CHUNK = 50;
+    const kept  = [];
+    for (let i = 0; i < titles.length; i += CHUNK) {
+        const chunk = titles.slice(i, i + CHUNK);
+        try {
+            const p = new URLSearchParams({
+                action: 'wbgetentities', sites: 'frwiki',
+                titles: chunk.join('|'),
+                props : 'sitelinks/urls',
+                format: 'json', origin: '*',
+            });
+            const r = await fetch(`${WD_API}?${p}`, { signal: AbortSignal.timeout(12000) });
+            if (!r.ok) { kept.push(...chunk); continue; }
+            const d = await r.json();
+            // Construire un Set des titres fr qui passent le seuil
+            const passing = new Set();
+            for (const ent of Object.values(d?.entities || {})) {
+                if (ent.missing !== undefined) continue;
+                if (Object.keys(ent.sitelinks || {}).length >= MIN_SITELINKS) {
+                    const frTitle = ent.sitelinks?.frwiki?.title;
+                    if (frTitle) passing.add(frTitle);
+                }
+            }
+            // Conserver l'ordre original du chunk
+            chunk.forEach(t => { if (passing.has(t)) kept.push(t); });
+        } catch {
+            kept.push(...chunk); // fail-safe
+        }
+    }
+    return kept;
+}
+
 /* ====================================================================
    CATÉGORIES : récupération et filtrage
    ==================================================================== */
@@ -252,16 +298,15 @@ async function fetchWikidataHints(title) {
         // Appel 1 : titre Wikipedia → entité Wikidata + claims + description
         const p1 = new URLSearchParams({
             action: 'wbgetentities', sites: 'frwiki', titles: title,
-            props: 'claims|descriptions|sitelinks/urls', languages: 'fr', format: 'json', origin: '*',
+            props: 'claims|descriptions', languages: 'fr', format: 'json', origin: '*',
         });
         const r1 = await fetch(`${WD_API}?${p1}`, { signal: AbortSignal.timeout(8000) });
-        if (!r1.ok) return [];
+        if (!r1.ok) return { hints: [], description: '' };
         const d1 = await r1.json();
         const entity = Object.values(d1?.entities || {})[0];
-        if (!entity || entity.missing !== undefined) return { hints: [], description: '', sitelinks: 0 };
+        if (!entity || entity.missing !== undefined) return { hints: [], description: '' };
 
         const description = entity.descriptions?.fr?.value || '';
-        const sitelinks   = Object.keys(entity.sitelinks || {}).length;
         const qids  = new Set();
         const years = new Set();
 
@@ -304,9 +349,9 @@ async function fetchWikidataHints(title) {
             }
         }
 
-        return { hints, description, sitelinks };
+        return { hints, description };
     } catch {
-        return { hints: [], description: '', sitelinks: 0 };
+        return { hints: [], description: '' };
     }
 }
 
@@ -347,7 +392,6 @@ async function fetchArticleData(title) {
         cats,
         hints      : filterHints(wd.hints, title),
         description: filterDescription(wd.description, title),
-        sitelinks  : wd.sitelinks,
     };
 }
 
@@ -508,11 +552,13 @@ async function beginGame(playDate) {
     const saved = loadGame(playDate);
 
     try {
-        if (saved?.articles?.length >= ARTICLES_PER_DAY) {
+        if (saved?.articles?.length > 0) {
             G.articles = saved.articles;
         } else {
             const pool = await fetchPool();
-            G.articles = pickDaily(pool, playDate);
+            const buffer = pickDaily(pool, playDate);
+            $('categories-container').innerHTML = '<p class="loading-msg">⏳ Filtrage des articles…</p>';
+            G.articles = await batchFilterBySitelinks(buffer);
         }
     } catch (e) {
         $('categories-container').innerHTML =
@@ -577,9 +623,8 @@ async function loadArticle() {
             return;
         }
 
-        // Skip : pas assez connu OU pas assez d'indices
-        if (data.sitelinks < MIN_SITELINKS ||
-            G.cats.length + G.hints.length + (G.description ? 1 : 0) < MIN_HINTS) {
+        // Skip : pas assez d'indices
+        if (G.cats.length + G.hints.length + (G.description ? 1 : 0) < MIN_HINTS) {
             // Pas assez d'indices : passer silencieusement au suivant
             G.idx++;
             continue;
