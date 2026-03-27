@@ -83,8 +83,16 @@ body {
 .nav-links {
     display: flex;
     gap: 4px;
-    flex-wrap: wrap;
-    justify-content: flex-end;
+}
+
+.nav-icon { display: none; }
+
+@media (max-width: 500px) {
+    .site-header { padding: 0 12px; }
+    .nav-logo { font-size: 1rem; }
+    .nav-label { display: none; }
+    .nav-icon { display: inline; font-style: normal; }
+    .nav-links .btn-link { padding: 8px 10px; font-size: 1.1rem; }
 }
 
 /* ===== HOME ===== */
