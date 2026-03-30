@@ -478,8 +478,11 @@ function filterHints(hints, title) {
     return hints.filter(h => {
         if (keywords.length === 0) return true;
         const nh = normalize(h);
-        // Exclure si le hint contient un mot-clé du titre
+        // Exclure si le hint normalisé (sans parenthèses) contient un mot-clé du titre
         if (keywords.some(w => nh.includes(w))) return false;
+        // Vérifier aussi le texte brut (parenthèses incluses) ex: "Eudoxie (femme de Justinien II)"
+        const nhFull = h.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+        if (keywords.some(w => nhFull.includes(w))) return false;
         return true;
     });
 }
@@ -497,17 +500,42 @@ function filterDescription(desc, title) {
 }
 
 /**
- * Récupère catégories Wikipedia + hints Wikidata en parallèle.
+ * Récupère les titres des redirections Wikipedia vers un article (synonymes acceptés).
+ */
+async function fetchRedirects(title) {
+    try {
+        const params = new URLSearchParams({
+            action  : 'query',
+            titles  : title,
+            prop    : 'redirects',
+            rdlimit : '50',
+            format  : 'json',
+            origin  : '*',
+        });
+        const r = await fetch(`${WP_API}?${params}`, { signal: AbortSignal.timeout(8000) });
+        if (!r.ok) return [];
+        const d = await r.json();
+        const page = Object.values(d?.query?.pages || {})[0];
+        return (page?.redirects || []).map(rd => rd.title);
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * Récupère catégories Wikipedia + hints Wikidata + redirections en parallèle.
  */
 async function fetchArticleData(title) {
-    const [cats, wd] = await Promise.all([
+    const [cats, wd, aliases] = await Promise.all([
         fetchCategoriesWP(title),
         fetchWikidataHints(title),
+        fetchRedirects(title),
     ]);
     return {
         cats,
         hints      : filterHints(wd.hints, title),
         description: filterDescription(wd.description, title),
+        aliases,
     };
 }
 
@@ -554,6 +582,7 @@ let G = {
     cats       : [],
     hints      : [],
     description: '',
+    aliases    : [],
     score      : 0,
     results    : [],
     attempts   : 0,
@@ -655,6 +684,7 @@ async function beginGame(playDate) {
     G.cats        = [];
     G.hints       = [];
     G.description = '';
+    G.aliases     = [];
     G.attempts    = 0;
     G.idx      = 0;
     G.phase    = 'loading-pool';
@@ -724,6 +754,7 @@ async function loadArticle() {
         G.cats        = [];
         G.hints       = [];
         G.description = '';
+        G.aliases     = [];
         G.attempts = 0;
 
         const title = G.articles[G.idx];
@@ -740,6 +771,7 @@ async function loadArticle() {
             G.cats        = data.cats;
             G.hints       = data.hints;
             G.description = data.description;
+            G.aliases     = data.aliases;
         } catch {
             $('categories-container').innerHTML =
                 '<p class="loading-msg error-msg">❌ Erreur réseau. Vous pouvez passer cet article.</p>';
@@ -774,7 +806,8 @@ function submitGuess() {
     const val = $('guess-input').value.trim();
     if (!val) return;
     G.attempts++;
-    if (isCorrect(val, G.articles[G.idx])) {
+    const title = G.articles[G.idx];
+    if (isCorrect(val, title) || G.aliases.some(a => isCorrect(val, a))) {
         endArticle(true);
     } else {
         // Une seule tentative : mauvaise réponse = échec immédiat
