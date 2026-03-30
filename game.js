@@ -239,14 +239,29 @@ async function fetchPool() {
     return titles;
 }
 
+function loadUsedArticles() {
+    try { return new Set(JSON.parse(localStorage.getItem('wq_used')) || []); } catch { return new Set(); }
+}
+function saveUsedArticles(titles) {
+    const used = loadUsedArticles();
+    titles.forEach(t => used.add(t));
+    // Plafond à 600 entrées (~2 mois) pour éviter un localStorage trop volumineux
+    const arr = [...used];
+    if (arr.length > 600) arr.splice(0, arr.length - 600);
+    try { localStorage.setItem('wq_used', JSON.stringify(arr)); } catch {}
+}
+
 function pickDaily(pool, dateStr) {
+    const used = loadUsedArticles();
     const rng  = mkRng(dateSeed(dateStr));
     const copy = [...pool];
     for (let i = copy.length - 1; i > 0; i--) {
         const j = Math.floor(rng() * (i + 1));
         [copy[i], copy[j]] = [copy[j], copy[i]];
     }
-    return copy.slice(0, BUFFER_SIZE);
+    // On saute les articles déjà joués lors de précédentes parties
+    const filtered = copy.filter(t => !used.has(t));
+    return filtered.slice(0, BUFFER_SIZE);
 }
 
 // Cache notoriété : titre → nombre de sitelinks (rempli par batchFilterBySitelinks)
@@ -578,6 +593,8 @@ function saveStats(score) {
     if (s.history.length > 30) s.history.pop();
     s.dist[score] = (s.dist[score]||0) + 1;
     localStorage.setItem(statsKey(), JSON.stringify(s));
+    // Mémoriser les articles joués pour éviter les répétitions futures
+    if (G.articles?.length) saveUsedArticles(G.articles);
 }
 
 /* ====================================================================
