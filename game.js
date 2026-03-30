@@ -8,7 +8,7 @@ const WD_API           = 'https://www.wikidata.org/w/api.php';
 const ARTICLES_PER_DAY = 10;
 const BUFFER_SIZE  = ARTICLES_PER_DAY * 30; // buffer large pour le pré-filtrage batch
 const MIN_HINTS    = 10;  // seuil minimum de hints pour jouer
-const MIN_SITELINKS = 40; // seuil de notoriété — sujets internationalement connus
+const MIN_SITELINKS = 30; // seuil de notoriété — sujets internationalement connus
 
 // Propriétés Wikidata à récupérer, par ordre de pertinence
 const WIKIDATA_PROPS = [
