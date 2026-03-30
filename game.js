@@ -8,7 +8,7 @@ const WD_API           = 'https://www.wikidata.org/w/api.php';
 const ARTICLES_PER_DAY = 10;
 const BUFFER_SIZE  = ARTICLES_PER_DAY * 30; // buffer large pour le pré-filtrage batch
 const MIN_HINTS    = 10;  // seuil minimum de hints pour jouer
-const MIN_SITELINKS = 90; // seuil de notoriété — sujets universellement connus
+const MIN_SITELINKS = 40; // seuil de notoriété — sujets internationalement connus
 
 // Propriétés Wikidata à récupérer, par ordre de pertinence
 const WIKIDATA_PROPS = [
@@ -302,6 +302,7 @@ async function batchFilterBySitelinks(titles) {
 
     // Filtre rapide : éliminer les titres contenant une année
     const noYear = titles.filter(t => !TITLE_YEAR_RE.test(t));
+    console.log(`[FILTER] Entrée: ${titles.length} | Après filtre année: ${noYear.length} (-${titles.length - noYear.length})`);
 
     // Découpage en chunks traités en parallèle
     const chunks = [];
@@ -319,20 +320,22 @@ async function batchFilterBySitelinks(titles) {
             if (!r.ok) return chunk; // fail-safe
             const d = await r.json();
             const kept = [];
+            let nMissing = 0, nSitelinks = 0, nP31 = 0;
             for (const ent of Object.values(d?.entities || {})) {
-                if (ent.missing !== undefined) continue;
+                if (ent.missing !== undefined) { nMissing++; continue; }
                 const slCount = Object.keys(ent.sitelinks || {}).length;
-                if (slCount < MIN_SITELINKS) continue;
+                if (slCount < MIN_SITELINKS) { nSitelinks++; continue; }
                 const p31vals = (ent.claims?.P31 || []).map(
                     c => c?.mainsnak?.datavalue?.value?.id
                 ).filter(Boolean);
-                if (p31vals.some(id => WD_SKIP_P31.has(id))) continue;
+                if (p31vals.some(id => WD_SKIP_P31.has(id))) { nP31++; continue; }
                 const frTitle = ent.sitelinks?.frwiki?.title;
                 if (frTitle) {
                     sitelinksCache.set(frTitle, slCount);
                     kept.push(frTitle);
                 }
             }
+            console.log(`[FILTER chunk ${chunk.length}] manquants:${nMissing} sitelinks<${MIN_SITELINKS}:${nSitelinks} P31 exclus:${nP31} → gardés:${kept.length}`);
             return kept;
         } catch {
             return chunk; // fail-safe
@@ -340,7 +343,9 @@ async function batchFilterBySitelinks(titles) {
     };
 
     const results = await Promise.all(chunks.map(processChunk));
-    return results.flat();
+    const final = results.flat();
+    console.log(`[FILTER] ✅ Total éligibles après tous filtres: ${final.length} / ${titles.length}`);
+    return final;
 }
 
 /* ====================================================================
