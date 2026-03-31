@@ -699,14 +699,30 @@ async function beginGame(playDate) {
 
     const saved = loadGame(playDate);
 
+    const articlesKey = `wq_articles_${playDate}`;
     try {
         if (saved?.articles?.length > 0) {
             G.articles = saved.articles;
         } else {
-            const pool = await fetchPool();
-            const buffer = pickDaily(pool, playDate);
-            $('categories-container').innerHTML = '<p class="loading-msg">\u23f3 Filtrage des articles…</p>';
-            G.articles = await batchFilterBySitelinks(buffer);
+            // Cache des articles filtrés par date (évite que la sélection change à chaque rechargement)
+            let cachedArticles = null;
+            try {
+                const stored = localStorage.getItem(articlesKey);
+                if (stored) {
+                    const parsed = JSON.parse(stored);
+                    if (parsed?.length > 0) cachedArticles = parsed;
+                }
+            } catch {}
+
+            if (cachedArticles) {
+                G.articles = cachedArticles;
+            } else {
+                const pool = await fetchPool();
+                const buffer = pickDaily(pool, playDate);
+                $('categories-container').innerHTML = '<p class="loading-msg">\u23f3 Filtrage des articles…</p>';
+                G.articles = await batchFilterBySitelinks(buffer);
+                try { localStorage.setItem(articlesKey, JSON.stringify(G.articles)); } catch {}
+            }
         }
     } catch (e) {
         $('categories-container').innerHTML =
