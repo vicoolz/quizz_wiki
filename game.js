@@ -266,8 +266,35 @@ function pickDaily(pool, dateStr) {
 
 // Cache notoriété : titre → nombre de sitelinks (rempli par batchFilterBySitelinks)
 const sitelinksCache = new Map();
+// Cache type principal : titre → QID P31 (pour la diversification thématique)
+const p31Cache = new Map();
 
-// Types Wikidata P31 non-devinables (instances spécifiques d'événements récurrents)
+/**
+ * Réordonne les articles filtrés pour éviter la concentration thématique.
+ * Les articles de même type P31 (ex. tous les empereurs romains) sont
+ * espacés grâce à un interleaving round-robin par groupe de type.
+ * Les groupes les plus grands passent en premier pour maximiser l'étalement.
+ */
+function diversifyArticles(titles) {
+    const groups = new Map();
+    for (const t of titles) {
+        // Articles sans P31 connu forment chacun leur propre groupe (ordre préservé)
+        const key = p31Cache.get(t) || `__${t}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(t);
+    }
+    // Trier les groupes par taille décroissante pour étaler les plus fréquents en premier
+    const buckets = [...groups.values()].sort((a, b) => b.length - a.length);
+    const result = [];
+    while (buckets.some(b => b.length > 0)) {
+        for (const b of buckets) {
+            if (b.length > 0) result.push(b.shift());
+        }
+    }
+    return result;
+}
+
+
 const WD_SKIP_P31 = new Set([
     'Q18536594', // édition des Jeux olympiques
     'Q82414',    // Jeux olympiques (générique)
@@ -330,6 +357,7 @@ async function batchFilterBySitelinks(titles) {
                 const frTitle = ent.sitelinks?.frwiki?.title;
                 if (frTitle) {
                     sitelinksCache.set(frTitle, slCount);
+                    p31Cache.set(frTitle, p31vals[0] || '');
                     kept.push(frTitle);
                 }
             }
@@ -721,8 +749,8 @@ async function beginGame(playDate) {
                 const buffer = pickDaily(pool, playDate);
                 $('categories-container').innerHTML = '<p class="loading-msg">\u23f3 Filtrage des articles…</p>';
                 const filtered = await batchFilterBySitelinks(buffer);
-                // Dédupliquer pour éviter qu'un même titre apparaisse deux fois
-                G.articles = [...new Set(filtered)];
+                // Dédupliquer et diversifier thématiquement (évite les clusters P31)
+                G.articles = [...new Set(diversifyArticles(filtered))];
                 try { localStorage.setItem(articlesKey, JSON.stringify(G.articles)); } catch {}
             }
         }
