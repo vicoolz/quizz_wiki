@@ -720,7 +720,9 @@ async function beginGame(playDate) {
                 const pool = await fetchPool();
                 const buffer = pickDaily(pool, playDate);
                 $('categories-container').innerHTML = '<p class="loading-msg">\u23f3 Filtrage des articles…</p>';
-                G.articles = await batchFilterBySitelinks(buffer);
+                const filtered = await batchFilterBySitelinks(buffer);
+                // Dédupliquer pour éviter qu'un même titre apparaisse deux fois
+                G.articles = [...new Set(filtered)];
                 try { localStorage.setItem(articlesKey, JSON.stringify(G.articles)); } catch {}
             }
         }
@@ -774,6 +776,13 @@ async function loadArticle() {
         G.attempts = 0;
 
         const title = G.articles[G.idx];
+
+        // Sauter un article déjà joué dans cette session (possible après reset G.idx = 0)
+        if (G.results.some(r => r.title === title)) {
+            G.idx++;
+            continue;
+        }
+
         updateProgress();
         $('categories-container').innerHTML = '<p class="loading-msg">⏳ Chargement depuis Wikipédia…</p>';
         $('guess-section').classList.remove('hidden');
